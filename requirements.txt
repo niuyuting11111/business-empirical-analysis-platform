@@ -1,0 +1,32 @@
+# ============================================================
+# 商科实证数据分析平台 — 依赖清单（版本已锁定）
+# Streamlit Community Cloud 会基于本文件从 PyPI 安装。
+# 所有版本均取自开发环境，并已在 PyPI 验证存在，可直接复现。
+# ============================================================
+
+# ---- 核心 Web 框架 ----
+streamlit==1.45.1
+
+# ---- 数据处理 / 数值计算 ----
+pandas==2.2.3
+numpy==2.1.3
+scipy==1.15.3
+pyarrow==19.0.0          # 数据清洗模块的 Parquet 读写（to_parquet / read_parquet）
+
+# ---- 计量经济 / 统计建模 ----
+linearmodels==7.0       # 面板 OLS / 随机效应 / IV-GMM
+statsmodels==0.14.4      # 回归诊断、时间序列、SEM、MixedLM
+arch==8.0.0             # 单位根检验（ADF）等
+scikit-learn==1.6.1     # Lasso / PCA / 因子分析 / Logit / 因果森林基学习器
+econml==0.17.0          # 双重机器学习 / 因果森林 (DML / Causal Forest)
+
+# ---- 可视化 / 文件导出 ----
+matplotlib==3.10.0      # 图表渲染
+openpyxl==3.1.5         # Excel 读写引擎（pandas read_excel / to_excel）
+
+# ---- 关键传递依赖（锁定以避免版本漂移导致安装失败）----
+patsy==1.0.1            # statsmodels / linearmodels 公式依赖
+joblib==1.4.2           # scikit-learn 内部依赖
+threadpoolctl==3.5.0    # scikit-learn 内部依赖
+numba==0.61.0           # arch 依赖
+llvmlite==0.44.0        # numba 依赖

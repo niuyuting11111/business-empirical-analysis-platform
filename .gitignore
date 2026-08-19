@@ -1,0 +1,48 @@
+# ============================================================
+# 商科实证数据分析平台 — .gitignore
+# 部署到 GitHub + Streamlit Community Cloud 时请忽略以下文件
+# ============================================================
+
+# ---- 密钥 / 环境变量（切勿提交）----
+.streamlit/secrets.toml
+.env
+*.env
+
+# ---- Python 缓存 / 字节码 ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ---- 虚拟环境 ----
+venv/
+.venv/
+env/
+ENV/
+
+# ---- 本地缓存与自动保存（运行时生成，不应入库）----
+saved_*.parquet
+saved_*.json
+*.parquet
+*.log
+streamlit.log
+
+# ---- 用户私有研究数据（体积大，非平台代码）----
+*.xlsx
+*.xls
+*.csv
+
+# ---- 开发 / 测试脚本（非部署必需）----
+app-bf.py
+app.py.bak*
+app.py.bak_*
+validate_*.py
+_scratch_*.py
+make_validation_data.py
+data_cleaning.py
+
+# ---- 操作系统 / IDE 元数据 ----
+.DS_Store
+.cursor/
+.vscode/
+.idea/
