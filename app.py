@@ -94,7 +94,7 @@ AI_SYSTEM_PROMPT = (
 )
 
 PLATFORM_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
-PLATFORM_MODEL = "glm-4.7"
+PLATFORM_MODEL = "glm-4.7-flash"
 PLATFORM_FREE_LIMIT = 15
 DEFAULT_BYOK_BASE = "https://api.deepseek.com"
 DEFAULT_BYOK_MODEL = "deepseek-v4-flash"
