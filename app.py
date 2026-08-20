@@ -104,7 +104,7 @@ def _resolve_ai_mode():
     """根据 session_state 与 secrets 解析当前调用模式，返回 (api_key, base_url, model, is_free)。"""
     _free = st.session_state.ai_use_platform_free or (not st.session_state.ai_user_api_key.strip())
     if _free:
-        _api_key = st.secrets.get("PLATFORM_API_KEY", "")
+        _api_key = (st.secrets.get("PLATFORM_API_KEY", "") or "").strip()
         return _api_key, PLATFORM_API_BASE, PLATFORM_MODEL, True
     _api_key = st.session_state.ai_user_api_key.strip()
     _base = st.session_state.ai_user_base_url.strip() or DEFAULT_BYOK_BASE
@@ -149,9 +149,17 @@ def _handle_ai_prompt(prompt):
                 json=_payload,
                 headers=_headers,
             ) as _resp:
+                # 非 200 时直接把智谱返回的原始错误展示出来，便于定位问题
                 if _resp.status_code != 200:
-                    _resp.read()
-                    _resp.raise_for_status()
+                    _body = _resp.read().decode("utf-8", errors="replace")
+                    _tip = (
+                        f"⚠️ API 返回 {_resp.status_code} 错误。\n\n"
+                        f"原始响应：{_body[:600]}\n\n"
+                        f"（如提示模型不存在，请确认 Model={_model}；"
+                        f"如提示鉴权失败，请确认 API Key 是否正确）"
+                    )
+                    st.session_state.ai_messages.append({"role": "assistant", "content": _tip})
+                    return
 
                 _reply = ""
                 with st.sidebar.chat_message("assistant"):
@@ -165,7 +173,10 @@ def _handle_ai_prompt(prompt):
                         _data = _text[6:]
                         if _data == "[DONE]":
                             break
-                        _chunk = _json.loads(_data)
+                        try:
+                            _chunk = _json.loads(_data)
+                        except _json.JSONDecodeError:
+                            continue
                         _delta = (_chunk.get("choices", [{}])[0].get("delta") or {}).get("content")
                         if _delta:
                             _reply += _delta
@@ -175,17 +186,8 @@ def _handle_ai_prompt(prompt):
                 if _free:
                     st.session_state.ai_platform_calls += 1
     except Exception as _e:  # noqa: BLE001 - 统一兜底，避免整页崩溃
-        _err = str(_e).lower()
-        if any(_k in _err for _k in ("model", "not found", "does not exist", "unknown model")):
-            _tip = "模型名称不存在，请检查 API 设置中的 Model 是否正确。"
-        elif any(_k in _err for _k in ("authentication", "401", "unauthorized", "invalid api key")):
-            _tip = "API 调用失败，请检查你的 API Key 是否正确。"
-        elif any(_k in _err for _k in ("rate", "429", "too many")):
-            _tip = "请求过于频繁，已被限流，请稍后重试。"
-        elif any(_k in _err for _k in ("connection", "timeout", "network", "name or service", "timed out")):
-            _tip = "网络连接失败，请检查网络后重试。"
-        else:
-            _tip = f"AI 调用出现异常：{_e}"
+        # 暴露真实异常原文，避免误判（如把鉴权失败错当成模型不存在）
+        _tip = f"⚠️ AI 调用出现异常：{_e}\n\n（请截图发我以便定位）"
         st.session_state.ai_messages.append({"role": "assistant", "content": _tip})
 
 
