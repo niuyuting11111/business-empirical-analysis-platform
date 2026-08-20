@@ -114,6 +114,9 @@ def _resolve_ai_mode():
 
 def _handle_ai_prompt(prompt):
     """处理一次用户提问：解析模式、调用模型、流式显示、限流与异常处理。"""
+    import json as _json
+    import requests as _requests
+
     st.session_state.ai_messages.append({"role": "user", "content": prompt})
     _api_key, _base, _model, _free = _resolve_ai_mode()
 
@@ -132,15 +135,36 @@ def _handle_ai_prompt(prompt):
             return
 
     _history = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + st.session_state.ai_messages
+    _payload = {"model": _model, "messages": _history, "stream": True}
+    _headers = {
+        "Authorization": f"Bearer {_api_key}",
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "text/event-stream; charset=utf-8",
+    }
     try:
-        from openai import OpenAI
-        _client = OpenAI(api_key=_api_key, base_url=_base)
-        _stream = _client.chat.completions.create(model=_model, messages=_history, stream=True)
+        _resp = _requests.post(
+            f"{_base.rstrip('/')}/chat/completions",
+            data=_json.dumps(_payload, ensure_ascii=False).encode("utf-8"),
+            headers=_headers,
+            stream=True,
+            timeout=60,
+        )
+        _resp.raise_for_status()
+
         _reply = ""
         with st.sidebar.chat_message("assistant"):
             _ph = st.empty()
-            for _chunk in _stream:
-                _delta = _chunk.choices[0].delta.content
+            for _line in _resp.iter_lines():
+                if not _line:
+                    continue
+                _text = _line.decode("utf-8", errors="replace")
+                if not _text.startswith("data: "):
+                    continue
+                _data = _text[6:]
+                if _data == "[DONE]":
+                    break
+                _chunk = _json.loads(_data)
+                _delta = (_chunk.get("choices", [{}])[0].get("delta") or {}).get("content")
                 if _delta:
                     _reply += _delta
                     _ph.markdown(_reply + "▌")
