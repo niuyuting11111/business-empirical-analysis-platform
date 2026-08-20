@@ -91,7 +91,7 @@ git push -u origin main
 
 - Streamlit Cloud 会自动 `pip install -r requirements.txt`（首次约 2–5 分钟）。
 - 部署完成后页面自动打开。请做一次冒烟测试：
-  - [ ] 页面正常加载，标题为「通用论文数据平台」
+  - [ ] 页面正常加载，标题为「实证派」
   - [ ] 左侧 15 个分析章节可正常切换
   - [ ] 上传一个 Excel/CSV，进入「数据清洗」可正常运行
 - 若构建失败，查看 Cloud 的 **Logs / Manage app → Logs**，常见原因与对策见下方「排错」。
