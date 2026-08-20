@@ -81,7 +81,143 @@ def _drop_absorbed(d, exog_df, use_entity, use_time):
         if not bad:
             keep.append(c)
     return exog_df[keep]
+
+
+# ==================== AI 智能助手（侧边栏混合模式） ====================
+AI_SYSTEM_PROMPT = (
+    "你是商科实证分析助手，帮助用户理解和使用网站的21个分析模块。"
+    "网站功能包括：数据清洗、描述性统计、基准回归（OLS/FE）、指标测算"
+    "（熵权法、TOPSIS、PCA、DEA、CRITIC）、因果推断（IV/2SLS、DID、RDD、PSM、"
+    "系统GMM、合成控制法）、机制分析（中介、调节、门槛）、空间计量"
+    "（SLM/SEM/SDM）、稳健性检验。请用简洁专业的语言回答用户问题，"
+    "必要时引导用户到对应页面操作。"
+)
+
+PLATFORM_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
+PLATFORM_MODEL = "glm-4.7-flash"
+PLATFORM_FREE_LIMIT = 15
+DEFAULT_BYOK_BASE = "https://api.deepseek.com"
+DEFAULT_BYOK_MODEL = "deepseek-v4-flash"
+
+
+def _resolve_ai_mode():
+    """根据 session_state 与 secrets 解析当前调用模式，返回 (api_key, base_url, model, is_free)。"""
+    _free = st.session_state.ai_use_platform_free or (not st.session_state.ai_user_api_key.strip())
+    if _free:
+        _api_key = st.secrets.get("PLATFORM_API_KEY", "")
+        return _api_key, PLATFORM_API_BASE, PLATFORM_MODEL, True
+    _api_key = st.session_state.ai_user_api_key.strip()
+    _base = st.session_state.ai_user_base_url.strip() or DEFAULT_BYOK_BASE
+    _model = st.session_state.ai_user_model.strip() or DEFAULT_BYOK_MODEL
+    return _api_key, _base, _model, False
+
+
+def _handle_ai_prompt(prompt):
+    """处理一次用户提问：解析模式、调用模型、流式显示、限流与异常处理。"""
+    st.session_state.ai_messages.append({"role": "user", "content": prompt})
+    _api_key, _base, _model, _free = _resolve_ai_mode()
+
+    if _free:
+        if not _api_key:
+            st.session_state.ai_messages.append({
+                "role": "assistant",
+                "content": "平台免费额度未配置（管理员需在 Streamlit Secrets 中设置 PLATFORM_API_KEY），请填写自己的 API Key 后使用。",
+            })
+            return
+        if st.session_state.ai_platform_calls >= PLATFORM_FREE_LIMIT:
+            st.session_state.ai_messages.append({
+                "role": "assistant",
+                "content": "体验额度已用完，请填写自己的 API Key 继续使用。",
+            })
+            return
+
+    _history = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + st.session_state.ai_messages
+    try:
+        from openai import OpenAI
+        _client = OpenAI(api_key=_api_key, base_url=_base)
+        _stream = _client.chat.completions.create(model=_model, messages=_history, stream=True)
+        _reply = ""
+        with st.sidebar.chat_message("assistant"):
+            _ph = st.empty()
+            for _chunk in _stream:
+                _delta = _chunk.choices[0].delta.content
+                if _delta:
+                    _reply += _delta
+                    _ph.markdown(_reply + "▌")
+            _ph.markdown(_reply)
+        st.session_state.ai_messages.append({"role": "assistant", "content": _reply})
+        if _free:
+            st.session_state.ai_platform_calls += 1
+    except Exception as _e:  # noqa: BLE001 - 统一兜底，避免整页崩溃
+        _err = str(_e).lower()
+        if any(_k in _err for _k in ("authentication", "401", "unauthorized", "invalid api key")):
+            _tip = "API 调用失败，请检查你的 API Key 是否正确。"
+        elif any(_k in _err for _k in ("rate", "429", "too many")):
+            _tip = "请求过于频繁，已被限流，请稍后重试。"
+        elif any(_k in _err for _k in ("connection", "timeout", "network", "name or service", "timed out")):
+            _tip = "网络连接失败，请检查网络后重试。"
+        else:
+            _tip = f"AI 调用出现异常：{_e}"
+        st.session_state.ai_messages.append({"role": "assistant", "content": _tip})
+
+
+def render_ai_assistant():
+    """在侧边栏渲染混合模式 AI 对话助手（平台免费额度 / 用户 BYOK）。"""
+    _defaults = {
+        "ai_messages": [],
+        "ai_user_api_key": "",
+        "ai_user_base_url": DEFAULT_BYOK_BASE,
+        "ai_user_model": DEFAULT_BYOK_MODEL,
+        "ai_use_platform_free": False,
+        "ai_platform_calls": 0,
+    }
+    for _k, _v in _defaults.items():
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
+
+    st.sidebar.markdown("---")
+    st.sidebar.title("💬 AI 智能助手")
+
+    with st.sidebar.expander("⚙️ API 设置", expanded=False):
+        st.session_state.ai_use_platform_free = st.checkbox(
+            "使用平台免费额度",
+            value=st.session_state.ai_use_platform_free,
+            key="ai_cb_free",
+            on_change=st.rerun,
+        )
+        if not st.session_state.ai_use_platform_free:
+            st.session_state.ai_user_api_key = st.text_input(
+                "API Key", type="password",
+                value=st.session_state.ai_user_api_key, key="ai_in_key",
+            )
+            st.session_state.ai_user_base_url = st.text_input(
+                "Base URL", value=st.session_state.ai_user_base_url, key="ai_in_url",
+            )
+            st.session_state.ai_user_model = st.text_input(
+                "Model 名称", value=st.session_state.ai_user_model, key="ai_in_model",
+            )
+        else:
+            st.info("已启用平台免费额度（智谱 GLM-4.7-Flash，每会话限 15 次）。")
+
+    for _msg in st.session_state.ai_messages:
+        with st.sidebar.chat_message(_msg["role"]):
+            st.markdown(_msg["content"])
+
+    if st.sidebar.button("🔄 重置对话", key="ai_btn_reset"):
+        st.session_state.ai_messages = []
+        st.session_state.ai_platform_calls = 0
+        st.rerun()
+
+    _prompt = st.sidebar.chat_input("向 AI 助手提问…", key="ai_chat_in")
+    if _prompt and _prompt.strip():
+        _handle_ai_prompt(_prompt.strip())
+        st.rerun()
+
+
 st.title("📊 实证派")
+
+# ==================== 侧边栏：AI 智能助手（顶部） ====================
+render_ai_assistant()
 
 # ==================== 侧边栏导航 ====================
 st.sidebar.title("📑 分析目录")

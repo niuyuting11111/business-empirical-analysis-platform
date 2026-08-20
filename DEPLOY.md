@@ -81,7 +81,10 @@ git push -u origin main
    - 将本地 `.streamlit/secrets.toml` 的内容粘贴进去，例如：
      ```toml
      OPENAI_API_KEY = "sk-xxxxxxxxxxxxxxxx"
+     # 平台兜底免费额度（混合模式 AI 助手）：填智谱 GLM 的 API Key
+     PLATFORM_API_KEY = "your-zhipu-key"
      ```
+   - `PLATFORM_API_KEY`：启用侧边栏「使用平台免费额度」时调用智谱 GLM-4.7-Flash（每会话限 15 次）。**不填则免费额度不可用**，但用户仍可填自己的 Key（BYOK）使用 AI 助手。
    - 若暂不使用 AI 功能，可先留空或填占位符，应用不会因此崩溃。
 5. 点击 **"Deploy!"**。
 
