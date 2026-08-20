@@ -16,7 +16,7 @@ from scipy import stats
 
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="通用论文数据平台", layout="wide")
+st.set_page_config(page_title="实证派", layout="wide")
 
 # ==================== 公共辅助函数（所有分析页面共享） ====================
 def _fmt_coef(param, se, pval):
@@ -81,7 +81,7 @@ def _drop_absorbed(d, exog_df, use_entity, use_time):
         if not bad:
             keep.append(c)
     return exog_df[keep]
-st.title("📊 通用经管论文数据分析平台")
+st.title("📊 实证派")
 
 # ==================== 侧边栏导航 ====================
 st.sidebar.title("📑 分析目录")
