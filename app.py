@@ -94,7 +94,7 @@ AI_SYSTEM_PROMPT = (
 )
 
 PLATFORM_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
-PLATFORM_MODEL = "glm-4.7-flash"
+PLATFORM_MODEL = "glm-4.7"
 PLATFORM_FREE_LIMIT = 15
 DEFAULT_BYOK_BASE = "https://api.deepseek.com"
 DEFAULT_BYOK_MODEL = "deepseek-v4-flash"
@@ -176,7 +176,9 @@ def _handle_ai_prompt(prompt):
                     st.session_state.ai_platform_calls += 1
     except Exception as _e:  # noqa: BLE001 - 统一兜底，避免整页崩溃
         _err = str(_e).lower()
-        if any(_k in _err for _k in ("authentication", "401", "unauthorized", "invalid api key")):
+        if any(_k in _err for _k in ("model", "not found", "does not exist", "unknown model")):
+            _tip = "模型名称不存在，请检查 API 设置中的 Model 是否正确。"
+        elif any(_k in _err for _k in ("authentication", "401", "unauthorized", "invalid api key")):
             _tip = "API 调用失败，请检查你的 API Key 是否正确。"
         elif any(_k in _err for _k in ("rate", "429", "too many")):
             _tip = "请求过于频繁，已被限流，请稍后重试。"
