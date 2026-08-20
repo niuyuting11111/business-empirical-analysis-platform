@@ -22,7 +22,6 @@
 - [x] `README.md`
 - [x] `DEPLOY.md`
 - [x] `.gitignore` —— 已忽略密钥 / 缓存 / 大数据文件
-- [x] `.python-version` —— 指定 Python 3.12，避免 Cloud 默认使用 3.14 导致科学计算包编译失败
 - [ ] `.streamlit/secrets.toml` —— **仅本地用，已被 .gitignore 忽略，不要提交**
 
 > 验证 `.gitignore` 是否生效：
@@ -76,7 +75,7 @@ git push -u origin main
    - **Repository**：选择第 3 步推送的仓库
    - **Branch**：`main`
    - **Main file path**：`app.py`
-   - **Python version**：仓库根目录已放置 `.python-version` 文件指定为 `3.12`，Cloud 会自动读取
+   - **Python version**：点击 **Advanced settings**，在下拉框中选择 **3.12**（不要选默认/自动/3.14，否则 pandas/numba 等科学计算包会编译失败）
 4. 配置 **Secrets**（关键）：
    - 展开 **"Advanced settings" → Secrets**
    - 将本地 `.streamlit/secrets.toml` 的内容粘贴进去，例如：
@@ -113,7 +112,7 @@ git push -u origin main
 |------|----------|------|
 | `ModuleNotFoundError: No module named 'xxx'` | `requirements.txt` 漏写依赖 | 在本地补上对应包及版本，重新 push |
 | 安装超时 / 失败 | 某个包版本在 PyPI 不存在 | 核对 `requirements.txt` 中版本号是否在 PyPI 真实存在 |
-| `Error installing requirements` / 编译 pandas/numpy 失败 | Streamlit Cloud 默认 Python 版本过新（如 3.14），科学计算包尚无 wheels | 在仓库根目录创建 `.python-version` 文件并写入 `3.12`，重新 push 后重启部署 |
+| `Error installing requirements` / 编译 pandas/numpy 失败 | Streamlit Cloud 默认 Python 版本过新（如 3.14），科学计算包尚无 wheels | 在 Cloud 的 App Settings → Python version 中改为 **3.12**，保存后 Reboot；如仍强制使用 3.14，需删除应用后重新部署并显式选 3.12 |
 | `FileNotFoundError` 读取本地文件 | 代码引用了仓库中不存在的文件 | 确保所有读写使用相对路径或用户上传，不要依赖本地绝对路径 |
 | 页面空白 / 报错 `set_page_config` 必须在最前 | 在 `st.set_page_config` 之前调用了其他 `st.*` | 本仓库已确认 `set_page_config` 是第一个 Streamlit 调用，无需修改 |
 | Secrets 未生效 | 未粘贴到 Cloud Secrets，或格式错误 | 确认粘贴内容与 `secrets.toml` 一致，TOML 语法正确 |
@@ -127,7 +126,7 @@ git push -u origin main
 - [x] 所有文件路径均为相对路径 / 内存对象（BytesIO），无硬编码绝对路径
 - [x] API Key 通过 `st.secrets["OPENAI_API_KEY"]` 读取（当前无 AI 功能，模板已预置）
 - [x] `requirements.txt` 所有版本均已锁定，并在 PyPI 验证存在
-- [x] `.python-version` 已指定 Python 3.12，确保 Streamlit Cloud 使用与科学计算包兼容的解释器
 - [x] `.gitignore` 已忽略 `secrets.toml`、`.env`、`__pycache__`、`*.pyc`、`venv/`
+- [ ] Streamlit Cloud 部署时需在 Advanced settings 中手动选择 Python 3.12（Cloud 可能默认 3.14）
 - [x] 异常处理完整，关键计算均有 `try/except` 兜底
 - [x] 无 AI 功能时应用可正常降级运行，不崩溃
