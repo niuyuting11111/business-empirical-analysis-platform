@@ -167,7 +167,8 @@ def _handle_ai_prompt(prompt):
                     for _line in _resp.iter_lines():
                         if not _line:
                             continue
-                        _text = _line.decode("utf-8", errors="replace")
+                        # httpx iter_lines() 已返回 str；做类型兼容避免不同版本差异
+                        _text = _line if isinstance(_line, str) else _line.decode("utf-8", errors="replace")
                         if not _text.startswith("data: "):
                             continue
                         _data = _text[6:]
