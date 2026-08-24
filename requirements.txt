@@ -19,7 +19,9 @@ statsmodels==0.14.4      # 回归诊断、时间序列、SEM、MixedLM
 arch==8.0.0             # 单位根检验（ADF）等
 scikit-learn==1.6.1     # Lasso / PCA / 因子分析 / Logit / 因果森林基学习器
 econml==0.17.0          # 双重机器学习 / 因果森林 (DML / Causal Forest)
-semopy==2.3.2           # 结构方程模型 SEM（第 12 页 Model / calc_stats）
+semopy==2.3.11          # 结构方程模型 SEM（第 12 页 Model / calc_stats）
+                        # 注意：2.3.2 的依赖声明里是已废弃的 'sklearn' 包，
+                        # 新版 pip 会拒绝安装导致云端构建失败，故锁定 2.3.11（改用 scikit-learn）。
 
 # ---- 可视化 / 文件导出 ----
 matplotlib==3.10.0      # 图表渲染
