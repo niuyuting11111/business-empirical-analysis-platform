@@ -1,0 +1,17 @@
+# ============================================================
+# 「实证派」Streamlit 运行配置（L12 / M24）
+# ============================================================
+
+[server]
+# 单文件上传上限（MB）：超大 Excel 会长时间卡死，限定为 100
+maxUploadSize = 100
+# 云端只读文件系统下避免无谓的写盘尝试
+enableStaticServing = false
+
+[browser]
+# 关闭用量统计上报
+gatherUsageStats = false
+
+[theme]
+# 最小主题：与 Streamlit 默认保持一致，仅声明主色便于识别
+primaryColor = "#FF4B4B"

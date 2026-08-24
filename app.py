@@ -42,8 +42,18 @@ def _get_se(model, name):
 
 
 def _show_table(display_df, fname, sheet="结果"):
-    """以学术 HTML 表格展示结果，并提供 Excel 下载（聚类稳健结果亦可导出）。"""
-    st.markdown(display_df.to_html(index=False, escape=False), unsafe_allow_html=True)
+    """以学术 HTML 表格展示结果，并提供 Excel 下载（聚类稳健结果亦可导出）。
+
+    - escape=True：防止用户列名/内容中的 HTML 注入（审查项 L5）。
+    - 结果同步写入 st.session_state.results[fname]，供跨页查看与自动采集（审查项 M14）。
+    """
+    if "results" not in st.session_state:
+        st.session_state.results = {}
+    try:
+        st.session_state.results[fname] = display_df.copy()
+    except Exception:
+        pass
+    st.markdown(display_df.to_html(index=False, escape=True), unsafe_allow_html=True)
     _buf = BytesIO()
     with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
         display_df.to_excel(_w, index=False, sheet_name=sheet)
@@ -55,6 +65,18 @@ def _show_table(display_df, fname, sheet="结果"):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"dl_{fname}",
     )
+
+
+def _safe_selectbox(label, options, *args, **kwargs):
+    """空 options 防护（审查项 M3）：无可选项时提示并停止，避免 StreamlitError 崩溃。"""
+    if not options:
+        st.warning("⚠️ 当前没有可供选择的列。请先在「1. 数据清洗」上传数据并完成列映射。")
+        st.stop()
+    return st.selectbox(label, options, *args, **kwargs)
+
+
+# 云端运行环境检测（Streamlit Community Cloud 文件系统只读，本地缓存功能需隐藏，审查项 L6）
+_IS_STREAMLIT_CLOUD = bool(os.getenv("STREAMLIT_CLOUD") or os.getenv("STREAMLIT_COMMUNITY_CLOUD"))
 
 
 def _fe_clusters(d):
@@ -165,6 +187,8 @@ if page == "1. 数据清洗":
         type=["xlsx", "xls", "csv"],
         accept_multiple_files=True,
     )
+    # 审查项 M24：提示文件大小上限，避免超大文件长时间卡死（配合 .streamlit/config.toml 的 maxUploadSize）
+    st.caption("💡 建议单个文件不超过 100MB；过大的文件请先在本地降采样或转为 CSV 后上传。")
 
     # 文件删除后清理缓存（自动加载的数据不会被误清理）
     if (
@@ -206,7 +230,7 @@ if page == "1. 数据清洗":
             with st.expander(f"📂 数据集 {idx+1}: {file_name}", expanded=(idx == 0)):
                 st.markdown("#### 🔍 数据预览")
                 st.dataframe(df.head(10), use_container_width=True)
-                st.markdown("#### 🛠️ 列名修改")
+                st.markdown("#### 🛠️ 列名修改（修改后点击「应用列名修改」生效）")
                 cols = df.columns.tolist()
                 new_cols = []
                 num_cols_per_row = 3
@@ -214,16 +238,23 @@ if page == "1. 数据清洗":
                     cols_in_row = cols[row_idx : row_idx + num_cols_per_row]
                     row_columns = st.columns(num_cols_per_row)
                     for col_idx, col_name in enumerate(cols_in_row):
+                        # key 按位置编号保持稳定，避免打字过程中 key 变化导致焦点丢失（审查项 M13）
                         new_col_name = row_columns[col_idx].text_input(
                             label=f"第 {row_idx+col_idx+1} 列",
                             value=col_name,
-                            key=f"rename_{file_name}_{col_name}",
+                            key=f"rename_{file_name}_p{row_idx+col_idx}",
                         )
                         new_cols.append(new_col_name)
-                if new_cols != cols:
-                    df.columns = new_cols
-                    st.session_state.file_data[file_name] = df
-                    st.success(f"✅ 文件 {file_name} 的列名已更新！")
+                if st.button("✅ 应用列名修改", key=f"rename_apply_{idx}_{file_name}"):
+                    if any(not str(c).strip() for c in new_cols):
+                        st.error("❌ 列名不能为空，请检查后再提交。")
+                    elif len(set(new_cols)) != len(new_cols):
+                        st.error("❌ 新列名存在重复，请检查后再提交。")
+                    elif new_cols != cols:
+                        df.columns = new_cols
+                        st.session_state.file_data[file_name] = df
+                        st.success(f"✅ 文件 {file_name} 的列名已更新！")
+                        st.rerun()
                 st.markdown("---")
     else:
         st.info(
@@ -237,7 +268,6 @@ if page == "1. 数据清洗":
         for name, df in st.session_state.file_data.items():
             all_cols.extend(df.columns.tolist())
         all_cols = sorted(list(set(all_cols)))
-        st.session_state.all_cols = all_cols
 
         # 关键列映射
         st.session_state.col_id = st.selectbox(
@@ -268,27 +298,32 @@ if page == "1. 数据清洗":
             "【行业代码】列（可选）", options=["无"] + all_cols
         )
 
-        # 年份范围
+        # 年份范围（col_year 必为真实列名，无需再判"无"，审查项 L3）
         min_year = 2000
         max_year = 2030
-        if st.session_state.col_year != "无":
-            try:
-                all_years = pd.concat(
-                    [
-                        df[st.session_state.col_year]
-                        for df in st.session_state.file_data.values()
-                    ]
-                )
-                min_year = int(all_years.min())
-                max_year = int(all_years.max())
-            except Exception:
-                pass
-        st.session_state.year_start, st.session_state.year_end = st.slider(
-            "选择年份范围",
-            min_value=min_year,
-            max_value=max_year,
-            value=(min_year, max_year),
-        )
+        try:
+            all_years = pd.concat(
+                [
+                    df[st.session_state.col_year]
+                    for df in st.session_state.file_data.values()
+                ]
+            )
+            min_year = int(all_years.min())
+            max_year = int(all_years.max())
+        except Exception:
+            pass
+        if min_year == max_year:
+            # 单年数据：slider 的 min==max 会报错，直接退化为固定年份（审查项 M4）
+            st.session_state.year_start = min_year
+            st.session_state.year_end = min_year
+            st.info(f"数据仅包含 {min_year} 一个年份，已跳过年份范围选择。")
+        else:
+            st.session_state.year_start, st.session_state.year_end = st.slider(
+                "选择年份范围",
+                min_value=min_year,
+                max_value=max_year,
+                value=(min_year, max_year),
+            )
 
     # Step 3: 清洗参数设置
     st.subheader("Step 3: 清洗参数设置")
@@ -373,11 +408,21 @@ if page == "1. 数据清洗":
                                 suffixes=("", "_dup"),
                             )
                             dup_cols = [c for c in merged.columns if c.endswith("_dup")]
+                            if dup_cols:
+                                # 审查项 M12：重名列不再静默丢弃，明确告知用户
+                                st.warning(
+                                    "⚠️ 合并时检测到重名列，已丢弃后一文件中的重复取值："
+                                    f"{', '.join(c[:-4] for c in dup_cols)}。"
+                                    "请自行核对这些变量在不同文件中的取值是否一致。"
+                                )
                             merged.drop(columns=dup_cols, inplace=True)
 
                     if merged is None or merged.empty:
                         st.error("合并后数据为空，请检查文件内容和列映射。")
                         st.stop()
+
+                    # 审查项 M1：插值/填充依赖行序，必须先按 (个体, 年份) 升序排列
+                    merged = merged.sort_values([col_id, col_year]).reset_index(drop=True)
 
                     merged = merged[
                         (merged[col_year] >= year_start)
@@ -393,7 +438,12 @@ if page == "1. 数据清洗":
                     num_cols = merged.select_dtypes(
                         include=[np.number]
                     ).columns.tolist()
-                    num_cols = [c for c in num_cols if c not in [col_id, col_year]]
+                    # 审查项 M11：行业代码列是分类变量，不得参与插值/缩尾/取对数
+                    num_cols = [
+                        c
+                        for c in num_cols
+                        if c not in [col_id, col_year, col_industry]
+                    ]
 
                     if fill_method == "线性插值 + 前后填充":
                         merged[num_cols] = merged.groupby(col_id)[
@@ -435,7 +485,7 @@ if page == "1. 数据清洗":
                         all_numeric = merged.select_dtypes(
                             include=[np.number]
                         ).columns.tolist()
-                        exclude_log = [col_id, col_year] + [
+                        exclude_log = [col_id, col_year, col_industry] + [
                             col for col in all_numeric if "ln_" in col
                         ]
                         cols_to_check = [c for c in all_numeric if c not in exclude_log]
@@ -444,11 +494,19 @@ if page == "1. 数据清洗":
                             if merged[col].nunique() > 10:
                                 col_skew = skew(merged[col].dropna())
                                 if abs(col_skew) > 2:
-                                    merged[f"ln_{col}"] = np.log1p(merged[col])
-                                    transformed.append(col)
+                                    _v = merged[col]
+                                    if (_v.dropna() > -1).all():
+                                        merged[f"ln_{col}"] = np.log1p(_v)
+                                        transformed.append(col)
+                                    else:
+                                        # 审查项 M2：存在 ≤-1 的值时 log1p 产生 NaN/-inf，
+                                        # 改用平移对数 ln(x - min + 1) 保证值域合法
+                                        _shift = _v.min()
+                                        merged[f"ln_{col}"] = np.log(_v - _shift + 1)
+                                        transformed.append(f"{col}（平移对数）")
                         if transformed:
                             st.info(
-                                f"✅ 已自动对以下变量取对数 ln(1+x)：{', '.join(transformed)}"
+                                f"✅ 已自动对以下变量取对数：{', '.join(transformed)}"
                             )
                         else:
                             st.info("ℹ️ 未检测到需要取对数的变量（偏度条件不满足）。")
@@ -480,7 +538,7 @@ if page == "1. 数据清洗":
                     output.seek(0)
                     st.download_button(
                         label="⬇️ 下载清洗后的数据 (Excel)",
-                        data=output,
+                        data=output.getvalue(),
                         file_name=f"cleaned_data_{year_start}_{year_end}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
@@ -488,8 +546,8 @@ if page == "1. 数据清洗":
                 except Exception as e:
                     st.error(f"❌ 清洗失败：{str(e)}")
                     st.code(traceback.format_exc())
-    # 保存清洗结果为本地缓存（下次自动加载）
-    if st.session_state.merged_df is not None:
+    # 保存清洗结果为本地缓存（下次自动加载）；云端文件系统只读，隐藏该功能（审查项 L6）
+    if st.session_state.merged_df is not None and not _IS_STREAMLIT_CLOUD:
         if st.button("💾 保存为本地缓存（下次自动加载）", key="save_cache"):
             try:
                 st.session_state.merged_df.to_parquet(
@@ -552,7 +610,7 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
             output_desc.seek(0)
             st.download_button(
                 label="⬇️ 下载描述性统计表 (Excel)",
-                data=output_desc,
+                data=output_desc.getvalue(),
                 file_name="descriptive_statistics.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
@@ -578,7 +636,7 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
             output_corr.seek(0)
             st.download_button(
                 label="⬇️ 下载相关性矩阵 (Excel)",
-                data=output_corr,
+                data=output_corr.getvalue(),
                 file_name="correlation_matrix.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
@@ -636,7 +694,7 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
         st.markdown("---")
         st.subheader("🩺 异方差与正态性诊断（回归诊断）")
         st.caption("对指定 OLS 模型残差检验异方差（Breusch-Pagan / White）与误差正态性（Jarque-Bera），是回归模型可信度的基础诊断。")
-        _het_y = st.selectbox("因变量 Y", options=all_num_cols, key="het_y")
+        _het_y = _safe_selectbox("因变量 Y", options=all_num_cols, key="het_y")
         _het_x = st.multiselect("解释变量 X", options=[c for c in all_num_cols if c != _het_y], default=[c for c in all_num_cols if c != _het_y][:min(3, len(all_num_cols) - 1)], key="het_x")
         if _het_y and _het_x:
             if st.button("运行诊断", key="het_btn"):
@@ -674,15 +732,10 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
         # ---------- 4. 单位根检验（平稳性检验） ----------
         st.markdown("---")
         st.subheader("📈 单位根检验（平稳性检验）")
-        st.write("Debug: 单位根检验模块已进入")
         st.caption(
             "💡 短面板数据（T<20）可使用'单序列检验'逐变量判断；长面板或宏观数据（T≥20）建议使用'面板单位根检验'。"
         )
 
-        import arch.unitroot as au
-        from statsmodels.tsa.stattools import adfuller
-        from scipy.stats import norm
-        import numpy as np
 
         # 使用选项卡
         tab1, tab2 = st.tabs(["单序列单位根检验", "面板单位根检验 (LLC)"])
@@ -850,7 +903,9 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
                                 )
 
                                 # LLC 统计量渐近服从标准正态分布
-                                p_value = 2 * (1 - norm.cdf(abs(llc_stat)))
+                                # 审查项 M5：LLC 为左侧检验，p 值应取左尾概率（原双侧写法会系统性放大 p 值）
+                                # 注：此处为简化近似（对个体 ADF-t 值直接 studentize），非完整 LLC 修正
+                                p_value = norm.cdf(llc_stat)
 
                                 conclusion = "平稳" if p_value < 0.05 else "非平稳"
                                 results.append(
@@ -885,6 +940,7 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
                             )
                         st.info(
                             "💡 LLC 检验原假设为'存在单位根'（非平稳），p<0.05 拒绝原假设，认为序列平稳。"
+                            "注：本实现为简化近似版（逐个体 ADF 统计量汇总），论文引用时建议以 Stata `xtunitroot llc` 复核。"
                         )
 
         # ---------- 5/6/7. F检验、LM检验、Hausman检验（合并变量选择）----------
@@ -900,7 +956,7 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
             for c in stat_cols
             if c not in [st.session_state.col_id, st.session_state.col_year]
         ]
-        y_for_test = st.selectbox(
+        y_for_test = _safe_selectbox(
             "选择被解释变量 (Y)",
             options=all_num_cols_for_test,
             index=len(all_num_cols_for_test) - 1 if all_num_cols_for_test else 0,
@@ -948,11 +1004,11 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
                 res_fe = mod_fe.fit()
                 ssr_pooled = res_pooled.resids.dot(res_pooled.resids)
                 ssr_fe = res_fe.resids.dot(res_fe.resids)
-                n = df_panel.index.get_level_values(0).nunique()
-                T = df_panel.index.get_level_values(1).nunique()
-                k = len(x_for_test)
-                F_stat = ((ssr_pooled - ssr_fe) / (n - 1)) / (ssr_fe / (n * T - n - k))
-                p_val_F = 1 - stats.f.cdf(F_stat, n - 1, n * T - n - k)
+                n_entities = df_panel.index.get_level_values(0).nunique()
+                n_years = df_panel.index.get_level_values(1).nunique()
+                n_x = len(x_for_test)
+                F_stat = ((ssr_pooled - ssr_fe) / (n_entities - 1)) / (ssr_fe / (n_entities * n_years - n_entities - n_x))
+                p_val_F = 1 - stats.f.cdf(F_stat, n_entities - 1, n_entities * n_years - n_entities - n_x)
                 st.write(f"F统计量 = {F_stat:.4f}, p值 = {p_val_F:.4f}")
                 if p_val_F < 0.05:
                     st.success("✅ p < 0.05，拒绝混合OLS，建议使用固定效应模型。")
@@ -988,9 +1044,9 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
                     # 分母：sum_i sum_t e_it^2
                     denominator = (resid_pooled**2).sum()
                     # LM统计量
-                    n = df_panel.index.get_level_values(0).nunique()
-                    T = df_panel.index.get_level_values(1).nunique()
-                    LM_stat = (n * T / 2) * ((numerator / denominator) - 1) ** 2
+                    n_entities = df_panel.index.get_level_values(0).nunique()
+                    n_years = df_panel.index.get_level_values(1).nunique()
+                    LM_stat = (n_entities * n_years / 2) * ((numerator / denominator) - 1) ** 2
                     # P值（卡方分布，自由度1）
                     p_val_LM = 1 - stats.chi2.cdf(LM_stat, df=1)
 
@@ -1045,41 +1101,13 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
 #                    第三阶段：回归分析（核心部分）
 # ================================================================
 elif page == "3. 回归分析":
-    import streamlit as st
-    import pandas as pd
-    import numpy as np
-    from io import BytesIO
-    from scipy.stats import skew
-    from linearmodels.panel import PanelOLS, RandomEffects
-    import warnings
-    import traceback
-    import statsmodels.api as sm
-    from scipy import stats
-
     st.header("📈 回归分析与结果导出")
 
-    # --- 数据状态强制同步与检查 ---
-    data_panel = None
-
-    # 1. 优先检查 data_panel
-    if "data_panel" in st.session_state and st.session_state["data_panel"] is not None:
-        data_panel = st.session_state["data_panel"]
-
-    # 2. 如果 data_panel 不存在，尝试从 merged_df 抢救
-    elif "merged_df" in st.session_state and st.session_state["merged_df"] is not None:
-        st.warning("⚠️ 未检测到面板数据，但检测到清洗后的数据。正在自动为您转换...")
-        st.session_state["data_panel"] = st.session_state["merged_df"]
-        data_panel = st.session_state["data_panel"]
-        st.rerun()  # 触发页面刷新
-
-    # 3. 如果两者都没有，报错并停止
-    else:
+    # --- 数据状态检查（审查项 M22：取消 data_panel 双轨，统一使用 merged_df） ---
+    if st.session_state.get("merged_df") is None:
         st.warning("请先在「1. 数据清洗」页面完成数据清洗。")
         st.stop()
-
-    # --- 调试信息 ---
-    st.sidebar.write(f"Debug: 当前数据维度: {data_panel.shape}")
-    st.sidebar.write(data_panel.head(10))  # 显示前10行数据
+    data_panel = st.session_state["merged_df"]
 
     # ========== 变量选择与模型设定 ==========
     st.subheader("🔧 模型设定")
@@ -1137,7 +1165,7 @@ elif page == "3. 回归分析":
         st.error("没有可用的变量，请检查数据清洗是否正确保留了变量。")
         st.stop()
     default_y_idx = len(analysis_vars) - 1
-    y_var = st.selectbox(
+    y_var = _safe_selectbox(
         "选择被解释变量 (Y)", options=analysis_vars, index=default_y_idx
     )
 
@@ -1218,9 +1246,9 @@ elif page == "3. 回归分析":
                         cov_type="cluster", cov_kwds={"groups": _entity_groups}
                     )
 
-                    # 第(2)列：+前两个控制变量 (OLS)
+                    # 第(2)列：+前半控制变量 (OLS)（审查项 L7：原标签"前两个控制"与实际逻辑不符）
                     X2 = sm.add_constant(df_clean[x_vars + ctrl_subset])
-                    model_results["(2) +前两个控制"] = sm.OLS(df_clean[y_var], X2).fit(
+                    model_results["(2) +前半控制"] = sm.OLS(df_clean[y_var], X2).fit(
                         cov_type="cluster", cov_kwds={"groups": _entity_groups}
                     )
 
@@ -1293,7 +1321,7 @@ elif page == "3. 回归分析":
                     # 列顺序：1-7
                     model_names = [
                         "(1) 仅X",
-                        "(2) +前两个控制",
+                        "(2) +前半控制",
                         "(3) +剩余控制",
                         "(4) 全控制",
                         "(5) L1.X",
@@ -1315,7 +1343,7 @@ elif page == "3. 回归分析":
                             # 当期X只在第(1)-(4)列和第(7)列中出现
                             if mn in [
                                 "(1) 仅X",
-                                "(2) +前两个控制",
+                                "(2) +前半控制",
                                 "(3) +剩余控制",
                                 "(4) 全控制",
                                 "(7) 全控制OLS",
@@ -1452,10 +1480,19 @@ elif page == "3. 回归分析":
                     cols = ["变量"] + model_names
                     display_df = display_df[cols]
 
+                    # 审查项 L10：注明各列模型类型，避免把列(1)误读为含固定效应的基准回归
+                    st.caption(
+                        "注：列(1)–(3) 为混合 OLS（按个体聚类稳健标准误），列(4)–(6) 为固定效应模型，列(7) 为全控制 OLS。"
+                        "括号内为标准误；***p<0.01，**p<0.05，*p<0.1。"
+                    )
                     st.markdown(
-                        display_df.to_html(index=False, escape=False),
+                        display_df.to_html(index=False, escape=True),
                         unsafe_allow_html=True,
                     )
+                    # 审查项 M14：结果同步写入 session_state.results 供跨页查看与自动采集
+                    if "results" not in st.session_state:
+                        st.session_state.results = {}
+                    st.session_state.results["regression_results.xlsx"] = display_df.copy()
                     # ========== 导出 Excel ==========
                     st.subheader("📥 导出结果")
                     if not display_df.empty:
@@ -1543,7 +1580,7 @@ elif page == "3. 回归分析":
 
     with _t_logit:
         st.caption("二值选择模型用于因变量为 0/1 的场景。可选 Logit 或 Probit，支持稳健/聚类标准误，并报告系数、优势比（Logit）与平均边际效应（AME）。")
-        _lg_y = st.selectbox("二值因变量 Y（将自动二值化）", options=analysis_vars, key="lg_y")
+        _lg_y = _safe_selectbox("二值因变量 Y（将自动二值化）", options=analysis_vars, key="lg_y")
         _lg_x = st.multiselect(
             "解释变量 X",
             options=[c for c in analysis_vars if c != _lg_y],
@@ -1617,7 +1654,7 @@ elif page == "3. 回归分析":
 
     with _t_qr:
         st.caption("分位数回归（Quantile Regression）刻画解释变量对不同条件分位点上因变量的边际影响，比 OLS 均值回归更能反映分布异质性。")
-        _qr_y = st.selectbox("因变量 Y", options=analysis_vars, key="qr_y")
+        _qr_y = _safe_selectbox("因变量 Y", options=analysis_vars, key="qr_y")
         _qr_x = st.multiselect(
             "解释变量 X",
             options=[c for c in analysis_vars if c != _qr_y],
@@ -1657,7 +1694,7 @@ elif page == "3. 回归分析":
     with _t_lasso:
         st.caption("Lasso(L1)/ElasticNet 通过正则化实现高维变量选择，自动将不重要变量的系数压缩为 0，适合控制变量众多或存在多重共线性的场景。")
         _num_cols = data_panel.select_dtypes(include=[np.number]).columns.tolist()
-        _ls_y = st.selectbox("被解释变量 Y", options=_num_cols, key="ls_y")
+        _ls_y = _safe_selectbox("被解释变量 Y", options=_num_cols, key="ls_y")
         _ls_x = st.multiselect("候选解释变量 X（含全部控制变量）", options=[c for c in _num_cols if c != _ls_y], default=[c for c in _num_cols if c != _ls_y][:min(8, len(_num_cols) - 1)], key="ls_x")
         _ls_model = st.radio("模型", ["Lasso (L1)", "ElasticNet"], horizontal=True, key="ls_model")
         _ls_cv = st.checkbox("交叉验证选择 α", value=True, key="ls_cv")
@@ -1692,7 +1729,7 @@ elif page == "3. 回归分析":
     with _t_glm:
         st.caption("广义线性回归(GLM)放宽 OLS 正态同方差假设，支持二值(Binomial)、计数(Poisson)、非负(Gamma)等因变量。默认异方差稳健标准误(HC1)。")
         _num_cols = data_panel.select_dtypes(include=[np.number]).columns.tolist()
-        _glm_y = st.selectbox("因变量 Y", options=_num_cols, key="glm_y")
+        _glm_y = _safe_selectbox("因变量 Y", options=_num_cols, key="glm_y")
         _glm_x = st.multiselect("解释变量 X", options=[c for c in _num_cols if c != _glm_y], default=[c for c in _num_cols if c != _glm_y][:min(5, len(_num_cols) - 1)], key="glm_x")
         _glm_family = st.selectbox("连接族 Family", ["Gaussian(连续)", "Binomial(二值0/1)", "Poisson(计数)", "Gamma(非负连续)"], key="glm_family")
         if _glm_y and _glm_x:
@@ -1702,7 +1739,14 @@ elif page == "3. 回归分析":
                     _dd = data_panel[[_glm_y] + _glm_x].dropna()
                     _Y = _dd[_glm_y].astype(float)
                     if _glm_family.startswith("Binomial"):
-                        _Y = (_Y > _Y.median()).astype(int)
+                        # 审查项 M21：仅允许 0/1 因变量，不再默认按中位数二值化连续变量
+                        if not set(_Y.dropna().unique()).issubset({0.0, 1.0}):
+                            st.error(
+                                "❌ Binomial 连接族仅适用于 0/1 二值因变量。当前 Y 不是 0/1 取值，"
+                                "请改用 Gaussian(连续) 或 Gamma(非负连续)；如需二值模型，请先在 Logit/Probit 模块处理。"
+                            )
+                            st.stop()
+                        _Y = _Y.astype(int)
                     _X = sm.add_constant(_dd[_glm_x].astype(float))
                     _fam = {"Gaussian(连续)": Gaussian(), "Binomial(二值0/1)": Binomial(), "Poisson(计数)": Poisson(), "Gamma(非负连续)": Gamma()}[_glm_family]
                     _glm = sm.GLM(_Y, _X, family=_fam).fit(cov_type="HC1")
@@ -1723,22 +1767,41 @@ elif page == "3. 回归分析":
     with _t_boot:
         st.caption("对 OLS 系数做 Bootstrap 百分位置信区间与置换检验 p 值，作为系数显著性的稳健性补充（不依赖正态/异方差假设）。")
         _num_cols = data_panel.select_dtypes(include=[np.number]).columns.tolist()
-        _b_y = st.selectbox("因变量 Y", options=_num_cols, key="b_y")
+        _b_y = _safe_selectbox("因变量 Y", options=_num_cols, key="b_y")
         _b_x = st.multiselect("解释变量 X", options=[c for c in _num_cols if c != _b_y], default=[c for c in _num_cols if c != _b_y][:min(3, len(_num_cols) - 1)], key="b_x")
         _b_rep = st.number_input("Bootstrap 重复次数", min_value=100, max_value=2000, value=500, step=100, key="b_rep")
+        _b_cluster = st.checkbox("面板数据：按个体整群重抽样（推荐）", value=True, key="b_cluster")
         if _b_y and _b_x:
             if st.button("🚀 运行 Bootstrap / 置换检验", type="primary", key="b_btn"):
                 try:
-                    _dd = data_panel[[_b_y] + _b_x].dropna().reset_index(drop=True)
+                    # 审查项 M16：支持按个体整群重抽样，避免行独立重抽样低估标准误
+                    _id_col = st.session_state.get("col_id")
+                    _use_cluster = (
+                        _b_cluster
+                        and _id_col is not None
+                        and _id_col in data_panel.columns
+                    )
+                    _sub_cols = [_b_y] + _b_x + ([_id_col] if _use_cluster else [])
+                    _dd = data_panel[_sub_cols].dropna().reset_index(drop=True)
                     _Y = _dd[_b_y].astype(float).values
                     _X = sm.add_constant(_dd[_b_x].astype(float)).values
+                    _groups = None
+                    _ent_u = None
+                    if _use_cluster:
+                        _idv = _dd[_id_col].values
+                        _ent_u = np.unique(_idv)
+                        _groups = {e: np.where(_idv == e)[0] for e in _ent_u}
                     def _ols(X, y):
                         return np.linalg.lstsq(X, y, rcond=None)[0]
                     _b_hat = _ols(_X, _Y)
                     _B = int(_b_rep); _boot = np.zeros((_B, _X.shape[1]))
                     _rng = np.random.default_rng(0)
                     for i in range(_B):
-                        _idx = _rng.integers(0, len(_Y), len(_Y))
+                        if _groups is not None:
+                            _ge = _rng.integers(0, len(_ent_u), len(_ent_u))
+                            _idx = np.concatenate([_groups[_ent_u[g]] for g in _ge])
+                        else:
+                            _idx = _rng.integers(0, len(_Y), len(_Y))
                         _boot[i] = _ols(_X[_idx], _Y[_idx])
                     _lo = np.percentile(_boot, 2.5, axis=0); _hi = np.percentile(_boot, 97.5, axis=0)
                     _xvar = _b_x[0]; _obs = _b_hat[1]
@@ -1754,7 +1817,7 @@ elif page == "3. 回归分析":
                     _pdf = pd.DataFrame({"变量": _names, "原始系数": np.round(_b_hat, 4), "置换 p 值": ["%.4f" % _p if n == _xvar else "—" for n in _names]})
                     st.subheader("📊 置换检验 p 值（针对首个解释变量）")
                     _show_table(_pdf, "permutation_p.xlsx", "Permutation")
-                    st.caption(f"变量 {_xvar} 的置换检验 p 值 = {_p:.4f}（<0.05 表示显著）")
+                    st.caption(f"变量 {_xvar} 的置换检验 p 值 = {_p:.4f}（<0.05 表示显著）。注：置换检验为行级置换；Bootstrap {'已按个体整群重抽样' if _groups is not None else '按行独立重抽样'}。")
                 except Exception as _e:
                     st.error(f"Bootstrap 失败：{_e}"); st.code(traceback.format_exc())
 
@@ -1762,12 +1825,6 @@ elif page == "3. 回归分析":
 #                    第四阶段：指标测算（熵权法 + TOPSIS）
 # ================================================================
 elif page == "4. 指标测算":
-    import streamlit as st
-    import pandas as pd
-    import numpy as np
-    from io import BytesIO
-    import traceback
-
     st.header("📐 第四阶段：指标测算（熵权法客观赋权 + TOPSIS 综合得分）")
 
     if st.session_state.merged_df is None:
@@ -1894,7 +1951,7 @@ elif page == "4. 指标测算":
                         out.seek(0)
                         st.download_button(
                             label="⬇️ 下载指标测算结果 (Excel)",
-                            data=out,
+                            data=out.getvalue(),
                             file_name="entropy_topsis_results.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         )
@@ -1950,7 +2007,7 @@ elif page == "4. 指标测算":
                             _wdf.to_excel(_w, sheet_name="CRITIC权重", index=False)
                             _res.to_excel(_w, sheet_name="CRITIC得分", index=False)
                         _buf.seek(0)
-                        st.download_button("⬇️ 下载 CRITIC 结果 (Excel)", _buf, "critic_results.xlsx",
+                        st.download_button("⬇️ 下载 CRITIC 结果 (Excel)", _buf.getvalue(), "critic_results.xlsx",
                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="critic_dl")
                 except Exception as e:
                     st.error(f"CRITIC 计算失败：{e}"); st.code(traceback.format_exc())
@@ -2003,7 +2060,7 @@ elif page == "4. 指标测算":
                             _sdf.to_excel(_w, sheet_name="主成分得分", index=False)
                             _cdf.to_excel(_w, sheet_name="综合得分", index=False)
                         _buf.seek(0)
-                        st.download_button("⬇️ 下载 PCA 结果 (Excel)", _buf, "pca_results.xlsx",
+                        st.download_button("⬇️ 下载 PCA 结果 (Excel)", _buf.getvalue(), "pca_results.xlsx",
                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="pca_dl")
                 except Exception as e:
                     st.error(f"PCA 失败：{e}"); st.code(traceback.format_exc())
@@ -2049,7 +2106,7 @@ elif page == "4. 指标测算":
                         with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
                             _ddf.to_excel(_w, sheet_name="DEA效率", index=False)
                         _buf.seek(0)
-                        st.download_button("⬇️ 下载 DEA 结果 (Excel)", _buf, "dea_results.xlsx",
+                        st.download_button("⬇️ 下载 DEA 结果 (Excel)", _buf.getvalue(), "dea_results.xlsx",
                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dea_dl")
                 except Exception as e:
                     st.error(f"DEA 失败：{e}"); st.code(traceback.format_exc())
@@ -2119,7 +2176,7 @@ elif page == "4. 指标测算":
                         _wd = {}
                         for i, c in enumerate(indicator_cols):
                             with _wc[i % len(_wc)]:
-                                _wd[c] = st.number_input(f"{c} 权重", min_value=0.0, value=1.0, step=0.1, key=f"w_{c}")
+                                _wd[c] = st.number_input(f"{c} 权重", min_value=0.0, value=1.0, step=0.1, key=f"comp_w_{c}")  # 审查项 M15：避免与自定义权重区 key 冲突
                         _ws = sum(_wd.values()) or 1.0
                         _w = pd.Series({c: v / _ws for c, v in _wd.items()})
                     _score = (_X * _w).sum(axis=1)
@@ -2287,10 +2344,6 @@ elif page == "5. 耦合协调度模型":
 #                    第七章：双重差分 DID + 事件研究法
 # ================================================================
 elif page == "7. DID + 事件研究法":
-    from linearmodels.panel import PanelOLS
-    import statsmodels.api as sm
-    from io import BytesIO
-
     st.header("第七章：双重差分 (DID) 与事件研究法")
 
     # ---------- 数据与变量准备（动态获取，不硬编码） ----------
@@ -2316,69 +2369,11 @@ elif page == "7. DID + 事件研究法":
     _all_cols = _df_panel.columns.tolist()
     _num_cols = _df_panel.select_dtypes(include=[np.number]).columns.tolist()
 
-    # ---------- 公共辅助函数（与内生性检验页一致） ----------
-    def _get_se(model, name):
-        if hasattr(model, "std_errors"):
-            return model.std_errors.get(name, None)
-        if hasattr(model, "bse"):
-            return model.bse.get(name, None)
-        return None
-
-    def _fmt_coef(param, se, pval):
-        if param is None or se is None:
-            return ""
-        try:
-            if pd.isna(param) or pd.isna(se):
-                return ""
-        except Exception:
-            pass
-        star = (
-            "***" if pval < 0.01
-            else "**" if pval < 0.05
-            else "*" if pval < 0.1
-            else ""
-        )
-        return f"{param:.4f}{star}({se:.4f})"
-
-    def _show_table(display_df, fname, sheet="结果"):
-        st.markdown(display_df.to_html(index=False, escape=False), unsafe_allow_html=True)
-        _buf = BytesIO()
-        with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
-            display_df.to_excel(_w, index=False, sheet_name=sheet)
-        _buf.seek(0)
-        st.download_button(
-            "📥 下载结果 (Excel)",
-            data=_buf.getvalue(),
-            file_name=fname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"dl_{fname}",
-        )
-
-    def _fe_clusters(d):
-        return pd.DataFrame({"entity": d.index.get_level_values(0)}, index=d.index)
-
-    def _drop_absorbed(d, exog_df, use_entity, use_time):
-        """丢弃在固定效应维度上无变异（会被完全吸收）的列，避免 AbsorbingEffectError。"""
-        gi = d.index.get_level_values(0)
-        gt = d.index.get_level_values(1)
-        keep = []
-        for c in exog_df.columns:
-            v = exog_df[c]
-            bad = False
-            if use_entity:
-                s = v.groupby(gi)
-                if (s.transform("max") - s.transform("min")).abs().max() < 1e-12:
-                    bad = True
-            if (not bad) and use_time:
-                s = v.groupby(gt)
-                if (s.transform("max") - s.transform("min")).abs().max() < 1e-12:
-                    bad = True
-            if not bad:
-                keep.append(c)
-        return exog_df[keep]
+    # 公共辅助函数统一使用文件顶部的全局版本（_get_se/_fmt_coef/_show_table/_fe_clusters/_drop_absorbed），
+    # 不再在页面内重复定义，避免副本分叉（审查项 S1 根源治理）。
 
     # ---------- 变量选择 ----------
-    _y_var = st.selectbox("被解释变量 (Y)", options=_num_cols, key="did_y")
+    _y_var = _safe_selectbox("被解释变量 (Y)", options=_num_cols, key="did_y")
     _ctrl_candidates = [c for c in _num_cols if c != _y_var]
     _control_vars = st.multiselect("控制变量", options=_ctrl_candidates, key="did_ctrl")
 
@@ -2412,6 +2407,25 @@ elif page == "7. DID + 事件研究法":
                 _yrs_u = sorted(pd.Series(_yr).unique().tolist())
                 _post_yrs = _dp[_dp[_post_col].astype(float) == 1].index.get_level_values(1).unique()
                 _treat_yr = min(_post_yrs) if len(_post_yrs) > 0 else (_yrs_u[-1] if _yrs_u else 0)
+                # 审查项 M10：检测交错处理（staggered DID）。本实现按最早政策年份统一编码相对时间，
+                # 若各处理实体的政策起始年份不一致，估计会有偏，必须提示用户。
+                try:
+                    _tmp_t = _dp[_dp[_treat_col].astype(float) == 1].copy()
+                    _tmp_t["__post_chk__"] = _tmp_t[_post_col].astype(float)
+                    _tmp_t = _tmp_t[_tmp_t["__post_chk__"] == 1]
+                    if not _tmp_t.empty:
+                        _first_yrs = _tmp_t.groupby(level=0).apply(
+                            lambda g: g.index.get_level_values(1).min()
+                        )
+                        if _first_yrs.nunique() > 1:
+                            st.warning(
+                                "⚠️ 检测到交错处理（不同实体的政策起始年份不同："
+                                f"{sorted(_first_yrs.unique().tolist())}）。"
+                                "本模块按最早政策年份统一编码相对时间，交错 DID 下会产生偏误，"
+                                "结果请谨慎解读；建议按处理时点分组分别估计，或使用 Callaway–Sant'Anna 等稳健估计。"
+                            )
+                except Exception:
+                    pass
                 _ref_rel_int = int(_ref_rel)
                 _dp_ev = _dp.copy()
                 _ev_cols = []  # (列名, 相对年份)
@@ -2503,10 +2517,6 @@ elif page == "7. DID + 事件研究法":
 # ================================================================
 elif page == "6. 内生性检验":
     from linearmodels.iv import IV2SLS, IVGMM
-    from linearmodels.panel import PanelOLS, RandomEffects
-    import statsmodels.api as sm
-    from scipy import stats
-    from io import BytesIO
 
     st.header("第五章：内生性检验")
 
@@ -2535,86 +2545,20 @@ elif page == "6. 内生性检验":
     _num_cols = _df_panel.select_dtypes(include=[np.number]).columns.tolist()
 
     st.subheader("🔧 通用变量选择（所有模块共享）")
-    _y_var = st.selectbox("被解释变量 (Y)", options=_num_cols, key="endo_y")
+    _y_var = _safe_selectbox("被解释变量 (Y)", options=_num_cols, key="endo_y")
     _x_candidates = [c for c in _num_cols if c != _y_var]
     _x_vars = st.multiselect("核心解释变量 (X)", options=_x_candidates, key="endo_x")
     _ctrl_candidates = [c for c in _num_cols if c not in [_y_var] + _x_vars]
     _control_vars = st.multiselect("控制变量", options=_ctrl_candidates, key="endo_ctrl")
 
     # ---------- 公共辅助函数 ----------
-    def _get_se(model, name):
-        """兼容 OLS(bse) 与 PanelOLS/IV(std_errors) 的标准误提取。"""
-        if hasattr(model, "std_errors"):
-            return model.std_errors.get(name, None)
-        if hasattr(model, "bse"):
-            return model.bse.get(name, None)
-        return None
-
-    def _fmt_coef(param, se, pval):
-        if param is None or se is None:
-            return ""
-        try:
-            if pd.isna(param) or pd.isna(se):
-                return ""
-        except Exception:
-            pass
-        star = (
-            "***" if pval < 0.01
-            else "**" if pval < 0.05
-            else "*" if pval < 0.1
-            else ""
-        )
-        return f"{param:.4f}{star}({se:.4f})"
-
-    def _show_table(display_df, fname, sheet="结果"):
-        st.markdown(
-            display_df.to_html(index=False, escape=False),
-            unsafe_allow_html=True,
-        )
-        _buf = BytesIO()
-        with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
-            display_df.to_excel(_w, index=False, sheet_name=sheet)
-        _buf.seek(0)
-        st.download_button(
-            "📥 下载结果 (Excel)",
-            data=_buf.getvalue(),
-            file_name=fname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"dl_{fname}",
-        )
+    # _get_se/_fmt_coef/_show_table/_fe_clusters/_drop_absorbed 统一使用文件顶部的全局版本，
+    # 不再在页面内重复定义（审查项 S1 的缩进 bug 正出自本页的一份坏副本，现予删除）。
 
     def _clean_panel(vars_used):
         """按所用变量删缺失，返回干净的面板 DataFrame（去重列名）。"""
         need = list(dict.fromkeys([c for c in vars_used if c in _df_panel.columns]))
         return _df_panel[need].dropna()
-
-    def _fe_clusters(d):
-        """构造与 d 同索引的个体聚类 DataFrame（linearmodels 7.x 正确用法：clusters 需为带相同索引的 DataFrame）。"""
-        return pd.DataFrame({"entity": d.index.get_level_values(0)}, index=d.index)
-
-    def _drop_absorbed(d, exog_df, use_entity, use_time):
-        """丢弃在固定效应维度上无变异（会被完全吸收）的列，避免 AbsorbingEffectError。
-
-        双向 / 单向 FE 下常数项必然被吸收，故调用方不应再 add_constant；
-        任何在个体(或年份)维度上取值恒定的变量都会被相应 FE 吸收，此处自动剔除。
-        """
-        gi = d.index.get_level_values(0)
-        gt = d.index.get_level_values(1)
-        keep = []
-        for c in exog_df.columns:
-            v = exog_df[c]
-            bad = False
-            if use_entity:
-                s = v.groupby(gi)
-                if (s.transform("max") - s.transform("min")).abs().max() < 1e-12:
-                    bad = True
-            if (not bad) and use_time:
-                s = v.groupby(gt)
-                if (s.transform("max") - s.transform("min")).abs().max() < 1e-12:
-                    bad = True
-        if not bad:
-            keep.append(c)
-        return exog_df[keep]
 
     def _ab_gmm(_y, _xex, _idv, _tv, _arl=1, _gmax=4, _sys=True):
         """Arellano-Bond 差分 / 系统 GMM（2 步最优权重）。
@@ -2692,7 +2636,8 @@ elif page == "6. 内生性检验":
         for _i in np.unique(_re):
             _gi = (_Z[_re == _i].T * _u2[_re == _i]).sum(axis=1); _g2 += _gi
         _g2 /= len(np.unique(_re))
-        _J = _n * (_g2.T @ _Wi @ _g2)
+        # 审查项 M6：两步 GMM 的 Hansen J 应使用最终权重矩阵 W2（原用一步权重 _Wi，不标准）
+        _J = _n * (_g2.T @ np.linalg.pinv(_W2) @ _g2)
         _hansen_p = chi2.sf(_J, max(1, _m - _k))
         # Arellano-Bond 序列相关检验：仅基于"差分方程"残差（_dY 部分），按实体分块后
         # 计算每实体的滞后1/滞后2自相关，跨实体平均并以单样本 t 检验 H0: 平均自相关=0。
@@ -2733,7 +2678,7 @@ elif page == "6. 内生性检验":
     with _tab_x1:
         st.caption("倾向得分匹配（PSM）：用可观测协变量估计接受处理的概率（倾向得分），在得分相近的样本间做最近邻匹配，降低选择性偏差；PSM-DID 在匹配样本上再做双重差分。")
         _psm_treat = st.selectbox("处理变量 D (0/1)", options=_all_cols, key="psm_treat")
-        _psm_y = st.selectbox("结果变量 Y", options=_num_cols, key="psm_y")
+        _psm_y = _safe_selectbox("结果变量 Y", options=_num_cols, key="psm_y")
         _psm_cov = st.multiselect("协变量（估计倾向得分）", options=_num_cols, default=_num_cols[:min(4, len(_num_cols))], key="psm_cov")
         _psm_k = st.number_input("最近邻匹配数 k", min_value=1, max_value=5, value=1, key="psm_k")
         _psm_caliper = st.number_input("卡尺（倾向得分标准差倍数，0=不限）", min_value=0.0, max_value=1.0, value=0.2, step=0.05, key="psm_caliper")
@@ -2750,8 +2695,18 @@ elif page == "6. 内生性检验":
                         _ti = np.where(_D == 1)[0]; _ci = np.where(_D == 0)[0]
                         _psc = _ps[_ci]
                         _thr = _psm_caliper * _psc.std() if _psm_caliper > 0 else np.inf
-                        _used = set(); _mt = []; _mc = []
+                        # 审查项 M8：共同支撑域检查——剔除倾向得分落在对照组 [min, max] 之外的处理单元
+                        _lo_cs, _hi_cs = float(_psc.min()), float(_psc.max())
+                        _off_support = int(((_ps[_ti] < _lo_cs) | (_ps[_ti] > _hi_cs)).sum())
+                        if _off_support:
+                            st.warning(
+                                f"⚠️ {_off_support} 个处理单元的倾向得分超出对照组共同支撑域 "
+                                f"[{_lo_cs:.3f}, {_hi_cs:.3f}]，已剔除。"
+                            )
+                        _used = set(); _mt = []; _mc = []; _dropped = 0
                         for _t in _ti:
+                            if _ps[_t] < _lo_cs or _ps[_t] > _hi_cs:
+                                continue
                             _dist = np.abs(_psc - _ps[_t]); _ord = np.argsort(_dist); _cnt = 0
                             for _j in _ord:
                                 if _j in _used:
@@ -2761,7 +2716,13 @@ elif page == "6. 内生性检验":
                                     if _cnt >= _psm_k:
                                         break
                             if _cnt == 0:
-                                _mt.append(_t); _mc.append(_ci[_ord[0]]); _used.add(_ord[0])
+                                # 审查项 M8：卡尺内无匹配时丢弃该处理单元（原实现强制突破卡尺，违背卡尺语义）
+                                _dropped += 1
+                        if _dropped:
+                            st.warning(f"⚠️ {_dropped} 个处理单元在卡尺内未找到可用对照，已丢弃（不强制突破卡尺匹配）。")
+                        if not _mt:
+                            st.error("❌ 没有任何处理单元完成匹配。请放宽卡尺（设为 0 表示不限）或调整协变量后重试。")
+                            st.stop()
                         _Yv = _d[_psm_y].astype(float).values
                         _att = _Yv[_mt].mean() - _Yv[_mc].mean()
                         _bal = []
@@ -2799,8 +2760,12 @@ elif page == "6. 内生性检验":
                         _ti = np.where(_D == 1)[0]; _ci = np.where(_D == 0)[0]
                         _psc = _ps[_ci]
                         _thr = _psm_caliper * _psc.std() if _psm_caliper > 0 else np.inf
-                        _used = set(); _mt = []; _mc = []
+                        # 审查项 M8：共同支撑域裁剪 + 卡尺内无匹配即丢弃（与 PSM 主模块一致）
+                        _lo_cs, _hi_cs = float(_psc.min()), float(_psc.max())
+                        _used = set(); _mt = []; _mc = []; _dropped = 0
                         for _t in _ti:
+                            if _ps[_t] < _lo_cs or _ps[_t] > _hi_cs:
+                                continue
                             _dist = np.abs(_psc - _ps[_t]); _ord = np.argsort(_dist); _cnt = 0
                             for _j in _ord:
                                 if _j in _used:
@@ -2810,7 +2775,12 @@ elif page == "6. 内生性检验":
                                     if _cnt >= _psm_k:
                                         break
                             if _cnt == 0:
-                                _mt.append(_t); _mc.append(_ci[_ord[0]]); _used.add(_ord[0])
+                                _dropped += 1
+                        if _dropped:
+                            st.warning(f"⚠️ {_dropped} 个处理单元在卡尺内未找到可用对照，已丢弃。")
+                        if not _mt:
+                            st.error("❌ 没有任何处理单元完成匹配，无法进行 PSM-DID。请放宽卡尺或调整协变量。")
+                            st.stop()
                         _mm = _d.iloc[np.concatenate([_mt, _mc])].copy()
                         _mm["__D__"] = _mm[_psm_treat].astype(float)
                         _mm["__P__"] = _mm[_psm_post].astype(float)
@@ -2835,12 +2805,13 @@ elif page == "6. 内生性检验":
     # ===================== 合成控制法 SCM =====================
     with _tab_x2:
         st.caption("合成控制法（SCM）：为处理单元构造一个由未处理单元加权合成的'反事实'，权重通过最小化处理前预测变量差异求得，再比较处理后真实值与合成值的差距。")
-        _scm_y = st.selectbox("结果变量 Y", options=_num_cols, key="scm_y")
+        _scm_y = _safe_selectbox("结果变量 Y", options=_num_cols, key="scm_y")
         _scm_pred = st.multiselect("预测变量（拟合权重，建议含各预处理期结果）", options=_num_cols, default=_num_cols[:min(3, len(_num_cols))], key="scm_pred")
         _scm_tu = st.selectbox("处理单元", options=sorted(_df_panel.index.get_level_values(0).unique().tolist()), key="scm_tu")
         _scm_tmin = int(_df_panel.index.get_level_values(1).min())
         _scm_tmax = int(_df_panel.index.get_level_values(1).max())
         _scm_cut = st.number_input("政策时点（含该年及之后为处理后）", min_value=_scm_tmin, max_value=_scm_tmax, value=_scm_tmax - 2, step=1, key="scm_cut")
+        _scm_placebo = st.checkbox("运行空间内安慰剂检验（逐一将供体单元视作伪处理单元，审查项 M23）", value=True, key="scm_placebo")
         if st.button("🚀 运行 SCM", type="primary", key="scm_btn"):
             try:
                 with st.spinner("求解合成控制权重..."):
@@ -2897,13 +2868,52 @@ elif page == "6. 内生性检验":
                     _chart = _gap_df.set_index("年份")[["真实值", "合成值"]]
                     st.line_chart(_chart)
                     st.info(f"政策后平均处理效应≈ {_gap.mean():.4f}；RMSPE 比 = {_post_rmspe / _pre_rmspe:.2f}（远大于1 支持处理效应存在）。")
+
+                    # 审查项 M23：空间内安慰剂检验（in-space placebo）——
+                    # 逐一将供体单元假想为处理单元，比较其"后/前 RMSPE 比"与真实处理单元的大小。
+                    # 若真实处理单元的比值排名靠前，说明差距不太可能由偶然产生。
+                    if _scm_placebo and len(_donors) >= 2:
+                        try:
+                            with st.spinner("运行安慰剂检验（最多 15 个供体）..."):
+                                _treat_ratio = _post_rmspe / max(_pre_rmspe, 1e-12)
+                                _pl_rows = [{"单元": f"{_scm_tu}（处理单元）", "后/前 RMSPE 比": round(_treat_ratio, 4)}]
+                                for _pd in _donors[:15]:
+                                    try:
+                                        _d_oth = [u for u in _donors if u != _pd]
+                                        _py = _pre[_pd].values
+                                        _pX = _pre[_d_oth].values
+                                        _r = minimize(
+                                            lambda w: np.sum((_py - _pX.dot(w)) ** 2),
+                                            np.ones(len(_d_oth)) / len(_d_oth),
+                                            method="SLSQP",
+                                            bounds=[(0.0, 1.0)] * len(_d_oth),
+                                            constraints={"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
+                                        )
+                                        _pre_r = float(np.sqrt(np.mean((_py - _pX.dot(_r.x)) ** 2)))
+                                        _gap_p = _post[_pd].values - _post[_d_oth].values.dot(_r.x)
+                                        _post_r = float(np.sqrt(np.mean(_gap_p ** 2)))
+                                        _pl_rows.append({"单元": str(_pd), "后/前 RMSPE 比": round(_post_r / max(_pre_r, 1e-12), 4)})
+                                    except Exception:
+                                        continue
+                                _pl_df = pd.DataFrame(_pl_rows).sort_values("后/前 RMSPE 比", ascending=False).reset_index(drop=True)
+                                _pl_df["排名"] = _pl_df.index + 1
+                                st.subheader("🧪 空间内安慰剂检验（后/前 RMSPE 比排名）")
+                                _show_table(_pl_df, "scm_placebo.xlsx", "Placebo")
+                                _rank = int(_pl_df.loc[_pl_df["单元"].str.contains("（处理单元）"), "排名"].iloc[0])
+                                st.info(
+                                    f"处理单元的后/前 RMSPE 比在 {_len_pl := len(_pl_df)} 个单元中排名第 {_rank}。"
+                                    + ("排名靠前，支持处理效应并非偶然。" if _rank <= max(1, len(_pl_df) // 5) else "排名不靠前，处理效应的显著性存疑，请谨慎解读。")
+                                )
+                        except Exception as _pe:
+                            st.warning(f"安慰剂检验未能完成：{_pe}")
             except Exception as _e:
                 st.error(f"SCM 失败：{_e}"); st.code(traceback.format_exc())
 
     # ===================== 系统 GMM =====================
     with _tab_x3:
-        st.caption("系统 GMM（动态面板 Arellano-Bond / Blundell-Bond）：以滞后因变量作为内生项、用其更深滞后作为工具，2 步最优 GMM 估计；可叠加水平方程（系统 GMM）。报告 AR(1)/AR(2) 序列相关与 Hansen 过度识别检验。")
-        _gmm_y = st.selectbox("被解释变量 Y（水平值）", options=_num_cols, key="gmm_y")
+        st.caption("系统 GMM（动态面板 Arellano-Bond / Blundell-Bond）：以滞后因变量作为内生项、用其更深滞后作为工具，2 步最优 GMM 估计；可叠加水平方程（系统 GMM）。报告 AR(1)/AR(2) 序列相关与 Hansen 过度识别检验。"
+                   "注：本模块为内置简化实现，AR 检验与 Hansen J 非标准 Arellano-Bond 矩条件检验，论文引用前建议用「内生性检验→GMM（IVGMM）」或 Stata xtabond2 复核。")
+        _gmm_y = _safe_selectbox("被解释变量 Y（水平值）", options=_num_cols, key="gmm_y")
         _gmm_x = st.multiselect("外生/前定 regressor（可空，仅估计 AR(1)）", options=[c for c in _num_cols if c != _gmm_y], key="gmm_x")
         _gmm_gmax = st.number_input("工具变量最大滞后深度", min_value=2, max_value=6, value=4, step=1, key="gmm_gmax")
         _gmm_sys = st.checkbox("系统 GMM（叠加水平方程）", value=True, key="gmm_sys")
@@ -2941,8 +2951,8 @@ elif page == "6. 内生性检验":
     # ===================== Heckman 两步法 =====================
     with _tab_x4:
         st.caption("Heckman 两步法纠正样本选择性偏差：第一步 Probit 选择方程估计选择概率，计算逆米尔斯比(IMR)；第二步在结果方程中加入 IMR，若 IMR 系数(λ)显著则说明存在选择性偏差。")
-        _hk_y = st.selectbox("结果变量 Y（连续）", options=_num_cols, key="hk_y")
-        _hk_d = st.selectbox("选择变量 D（0/1，是否进入样本）", options=_num_cols, key="hk_d")
+        _hk_y = _safe_selectbox("结果变量 Y（连续）", options=_num_cols, key="hk_y")
+        _hk_d = _safe_selectbox("选择变量 D（0/1，是否进入样本）", options=_num_cols, key="hk_d")
         _hk_x = st.multiselect("结果方程变量 X", options=[c for c in _num_cols if c not in [_hk_y, _hk_d]], key="hk_x")
         _hk_z = st.multiselect("选择方程变量 Z（建议含至少一个排他变量）", options=[c for c in _num_cols if c not in [_hk_y]], default=[c for c in _num_cols if c not in [_hk_y]][:min(3, len(_num_cols) - 1)], key="hk_z")
         if _hk_y and _hk_d and _hk_z:
@@ -2958,6 +2968,8 @@ elif page == "6. 内生性检验":
                         _imr = np.where(_D.values == 1, _phi / _Phi, -_phi / (1 - _Phi))
                         _out = _dd[[_hk_y] + _hk_x].astype(float).copy()
                         _out["IMR"] = _imr
+                        # 结果方程只应使用被选择样本（D=1）
+                        _out = _out[_D.values == 1]
                         _Xo = sm.add_constant(_out[[c for c in _out.columns if c != _hk_y]])
                         _res = sm.OLS(_out[_hk_y], _Xo).fit(cov_type="HC1")
                         _rows = []
@@ -2980,10 +2992,10 @@ elif page == "6. 内生性检验":
     # ===================== DDD 三重差分 =====================
     with _tab_x5:
         st.caption("三重差分(DDD)在 DID 基础上引入第二重分组，通过三重交互项识别政策效应，可排除由该第二分组维度随时间变化带来的混杂。核心关注 treat×post×group2 的系数。")
-        _ddd_y = st.selectbox("结果变量 Y", options=_num_cols, key="ddd_y")
-        _ddd_t = st.selectbox("处理变量 treat（0/1）", options=_num_cols, key="ddd_t")
-        _ddd_g = st.selectbox("第二分组 group2（0/1）", options=_num_cols, key="ddd_g")
-        _ddd_p = st.selectbox("政策后 post（0/1）", options=_num_cols, key="ddd_p")
+        _ddd_y = _safe_selectbox("结果变量 Y", options=_num_cols, key="ddd_y")
+        _ddd_t = _safe_selectbox("处理变量 treat（0/1）", options=_num_cols, key="ddd_t")
+        _ddd_g = _safe_selectbox("第二分组 group2（0/1）", options=_num_cols, key="ddd_g")
+        _ddd_p = _safe_selectbox("政策后 post（0/1）", options=_num_cols, key="ddd_p")
         _ddd_c = st.multiselect("控制变量", options=[c for c in _num_cols if c not in [_ddd_y, _ddd_t, _ddd_g, _ddd_p]], key="ddd_c")
         if _ddd_y and _ddd_t and _ddd_g and _ddd_p:
             if st.button("🚀 运行 DDD 三重差分", type="primary", key="ddd_btn"):
@@ -2994,7 +3006,8 @@ elif page == "6. 内生性检验":
                     _dd["P_G"] = _dd[_ddd_p] * _dd[_ddd_g]
                     _dd["T_P_G"] = _dd[_ddd_t] * _dd[_ddd_p] * _dd[_ddd_g]
                     _X = sm.add_constant(_dd[[_ddd_t, _ddd_p, _ddd_g, "T_P", "T_G", "P_G", "T_P_G"] + _ddd_c])
-                    _m = sm.OLS(_dd[_ddd_y], _X).fit(cov_type="HC1")
+                    # 面板三重差分惯例：按个体聚类稳健标准误（替代原 HC1）
+                    _m = sm.OLS(_dd[_ddd_y], _X).fit(cov_type="cluster", cov_kwds={"groups": _dd.index.get_level_values(0)})
                     _rows = []
                     for _n in _X.columns:
                         _rows.append({"变量": _n, "系数": _fmt_coef(_m.params[_n], _m.bse[_n], _m.pvalues[_n]), "标准误": f"{_m.bse[_n]:.4f}", "P>|t|": f"{_m.pvalues[_n]:.4f}"})
@@ -3057,26 +3070,29 @@ elif page == "6. 内生性检验":
                             cov_type="clustered", clusters=_clu
                         )
 
-                        # 第一阶段弱工具变量 F
-                        _fs_full = sm.OLS(
-                            _dp[_x_vars[0]],
-                            sm.add_constant(_dp[_control_vars + _instruments]),
-                        ).fit()
-                        _fs_res = sm.OLS(
-                            _dp[_x_vars[0]],
-                            sm.add_constant(_dp[_control_vars]) if _control_vars
-                            else pd.DataFrame({"const": 1.0}, index=_dp.index),
-                        ).fit()
-                        _q = len(_instruments)
-                        _n_fs = int(_fs_full.nobs)
-                        _rss_r = ((_fs_res.resid) ** 2).sum()
-                        _rss_u = ((_fs_full.resid) ** 2).sum()
-                        _k_u = _fs_full.df_model + 1
-                        _weak_f = (
-                            ((_rss_r - _rss_u) / _q)
-                            / (_rss_u / (_n_fs - _k_u))
-                        )
-                        _weak_p = 1 - stats.f.cdf(_weak_f, _q, _n_fs - _k_u)
+                        # 第一阶段弱工具变量 F（M20：对每个内生变量分别报告）
+                        _weak_fs = {}
+                        for _ev in _x_vars:
+                            _fs_full = sm.OLS(
+                                _dp[_ev],
+                                sm.add_constant(_dp[_control_vars + _instruments]),
+                            ).fit()
+                            _fs_res = sm.OLS(
+                                _dp[_ev],
+                                sm.add_constant(_dp[_control_vars]) if _control_vars
+                                else pd.DataFrame({"const": 1.0}, index=_dp.index),
+                            ).fit()
+                            _q = len(_instruments)
+                            _n_fs = int(_fs_full.nobs)
+                            _rss_r = ((_fs_res.resid) ** 2).sum()
+                            _rss_u = ((_fs_full.resid) ** 2).sum()
+                            _k_u = _fs_full.df_model + 1
+                            _f_ev = (
+                                ((_rss_r - _rss_u) / _q)
+                                / (_rss_u / (_n_fs - _k_u))
+                            )
+                            _weak_fs[_ev] = (_f_ev, 1 - stats.f.cdf(_f_ev, _q, _n_fs - _k_u))
+                        _weak_f, _weak_p = _weak_fs[_x_vars[0]]
 
                         # DWH 检验
                         try:
@@ -3111,17 +3127,21 @@ elif page == "6. 内生性检验":
                                     _rows[_v][_mn] = _fmt_coef(_m.params[_v], _get_se(_m, _v), _m.pvalues[_v])
                                 else:
                                     _rows[_v][_mn] = ""
-                        _rows["弱工具变量F"] = {"变量": "第一阶段 F (Stock-Yogo)", "OLS": "", "IV/2SLS": f"{_weak_f:.4f}(p={_weak_p:.4f})"}
+                        for _ev in _x_vars:
+                            _f_ev, _p_ev = _weak_fs[_ev]
+                            _rows[f"第一阶段F_{_ev}"] = {"变量": f"第一阶段 F（{_ev}）", "OLS": "", "IV/2SLS": f"{_f_ev:.4f}(p={_p_ev:.4f})"}
                         _rows["DWH检验"] = {"变量": "DWH χ²", "OLS": "", "IV/2SLS": f"{_dwh:.4f}(p={_dwh_p:.4f})"}
                         _rows["Hansen J"] = {"变量": "Hansen J (过度识别)", "OLS": "", "IV/2SLS": f"{_j_stat:.4f}(p={_j_p:.4f})"}
                         _rows["观测数"] = {"变量": "观测数", "OLS": int(_ols.nobs), "IV/2SLS": int(_iv.nobs)}
-                        _order = _x_vars + _control_vars + ["const"] + ["弱工具变量F", "DWH检验", "Hansen J", "观测数"]
+                        _order = _x_vars + _control_vars + ["const"] + [f"第一阶段F_{_ev}" for _ev in _x_vars] + ["DWH检验", "Hansen J", "观测数"]
                         _disp = pd.DataFrame([_rows[k] for k in _order])
                         _disp = _disp[["变量"] + _names]
                         st.markdown("##### OLS vs IV/2SLS 对比")
                         _show_table(_disp, "iv_2sls_results.xlsx", "IV2SLS")
+                        _fmin, _fmin_v = min((_wf[0], _ev) for _ev, _wf in _weak_fs.items())
                         st.info(
-                            f"弱工具变量 F = {_weak_f:.2f}（>10 为强工具）；"
+                            f"第一阶段 F 最小值 = {_fmin:.2f}（{_fmin_v}）；经验上 >10 为强工具，"
+                            f"Stock-Yogo 10% IV size 临界值约 16.38（单内生+单工具时）；"
                             f"DWH p = {_dwh_p:.4f}（<0.05 说明 X 内生，应选 IV）；"
                             f"Hansen J p = {_j_p:.4f}（>0.10 说明工具外生有效）。"
                         )
@@ -3258,8 +3278,9 @@ elif page == "6. 内生性检验":
                         # FE（常数项 / 不随 FE 维度变动的变量会被吸收，故先剔除再估计，不再 add_constant）
                         _exog_fe = _drop_absorbed(_dp, _dp[_x_vars + _control_vars], _use_entity, _use_time)
                         _fe = PanelOLS(_y, _exog_fe, entity_effects=_use_entity, time_effects=_use_time).fit(cov_type="clustered", clusters=_clu)
-                        # RE（用于 Hausman）
-                        _re = RandomEffects(_y, _exog).fit(cov_type="clustered", clusters=_clu)
+                        # RE（用于 Hausman）：RE 不吸收固定效应，就地构造含常数项的外生矩阵，不依赖其他按钮块的变量
+                        _exog_re = sm.add_constant(_dp[_x_vars + _control_vars])
+                        _re = RandomEffects(_y, _exog_re).fit(cov_type="clustered", clusters=_clu)
                         try:
                             _common = [p for p in _fe.params.index if p in _re.params.index and p != "const"]
                             _diff = _fe.params[_common].values - _re.params[_common].values
@@ -3347,6 +3368,46 @@ elif page == "6. 内生性检验":
                             _show_table(_sc_df, "synthetic_control.xlsx", "SC")
                             st.line_chart(_sc_df.set_index("年份")[["处理单元", "合成对照"]])
                             st.info(f"处理效应（处理后平均）= {_effect[_mat.index >= _sc_treat_yr].mean():.4f}。")
+
+                            # M23：in-space 安慰剂检验——逐个 donor 重跑 SCM，比较后/前 RMSPE 比
+                            try:
+                                _pre_mask = (_mat.index < _sc_treat_yr).values
+                                _post_mask = (_mat.index >= _sc_treat_yr).values
+
+                                def _rmspe(a, b):
+                                    return float(np.sqrt(np.mean((np.asarray(a) - np.asarray(b)) ** 2)))
+
+                                def _placebo_ratio(_tu, _pool):
+                                    _Yp = _mat.loc[_pre_mask, _tu].values
+                                    _Xp = _mat.loc[_pre_mask, _pool].values
+                                    _rp = minimize(
+                                        lambda w: np.sum((_Yp - _Xp @ w) ** 2),
+                                        np.ones(len(_pool)) / len(_pool),
+                                        method="SLSQP",
+                                        bounds=[(0.0, 1.0)] * len(_pool),
+                                        constraints=({"type": "eq", "fun": lambda w: np.sum(w) - 1.0},),
+                                    )
+                                    _wp = _rp.x
+                                    _pre_r = _rmspe(_Yp, _Xp @ _wp)
+                                    _post_r = _rmspe(_mat.loc[_post_mask, _tu].values, _mat.loc[_post_mask, _pool].values @ _wp)
+                                    return _post_r / _pre_r if _pre_r > 1e-12 else np.nan
+
+                                _pl_rows = [{"单元": f"{_sc_treated}（处理单元）", "后/前 RMSPE 比": round(float(_placebo_ratio(_sc_treated, _donors)), 4)}]
+                                for _pd in _donors[:15]:
+                                    _pool = [e for e in _ents if e != _pd]
+                                    try:
+                                        _pr = _placebo_ratio(_pd, _pool)
+                                        _pl_rows.append({"单元": str(_pd), "后/前 RMSPE 比": round(float(_pr), 4) if _pr == _pr else np.nan})
+                                    except Exception:
+                                        continue
+                                _pl_df = pd.DataFrame(_pl_rows).dropna().sort_values("后/前 RMSPE 比", ascending=False).reset_index(drop=True)
+                                st.markdown("##### In-space 安慰剂检验（后/前 RMSPE 比）")
+                                _show_table(_pl_df, "scm_placebo_simple.xlsx", "Placebo")
+                                if (_pl_df["单元"].str.contains("（处理单元）")).any():
+                                    _rank = int(_pl_df.index[_pl_df["单元"].str.contains("（处理单元）")][0]) + 1
+                                    st.caption(f"处理单元的后/前 RMSPE 比在 {len(_pl_df)} 个单元中排名第 {_rank}（越靠前说明处理效应越显著）。")
+                            except Exception:
+                                st.caption("安慰剂检验计算失败（不影响主结果）。")
                     except Exception as _e:
                         st.error(f"合成控制法出错：{_e}")
                         st.code(traceback.format_exc())
@@ -3359,6 +3420,7 @@ elif page == "6. 内生性检验":
             )
             _psm_treat = st.selectbox("处理变量（0/1）", options=_all_cols, key="psm_t")
             _psm_covs = st.multiselect("匹配协变量", options=_num_cols, key="psm_covs")
+            _psm_caliper2 = st.number_input("卡尺（倾向得分差值上限，0=不限）", min_value=0.0, max_value=1.0, value=0.05, step=0.01, key="psm_caliper_old")
             if st.button("▶️ 运行 PSM", key="run_psm"):
                 if not _psm_treat or not _psm_covs:
                     st.warning("请选择处理变量与匹配协变量。")
@@ -3374,30 +3436,59 @@ elif page == "6. 内生性检验":
                         _dp["ps"] = _logit.predict(_Xl)
                         _treated = _dp[_dp[_psm_treat] == 1].copy()
                         _control = _dp[_dp[_psm_treat] == 0].copy()
+                        # M8：共同支撑域修剪——剔除倾向得分落在对照组取值范围之外的处理单元
+                        _lo_cs = float(_control["ps"].min())
+                        _hi_cs = float(_control["ps"].max())
+                        _off = int(((_treated["ps"] < _lo_cs) | (_treated["ps"] > _hi_cs)).sum())
+                        if _off:
+                            st.warning(f"共同支撑修剪：{_off} 个处理单元倾向得分超出对照组范围 [{_lo_cs:.4f}, {_hi_cs:.4f}]，已剔除。")
+                            _treated = _treated[(_treated["ps"] >= _lo_cs) & (_treated["ps"] <= _hi_cs)]
+                        if _treated.empty or _control.empty:
+                            st.error("共同支撑修剪后处理组或对照组为空，无法匹配。")
+                            st.stop()
+                        _cal = float(_psm_caliper2) if _psm_caliper2 > 0 else None
                         _matched_idx = []
+                        _mt_pairs = []
                         _used = set()
-                        for _, _tr in _treated.iterrows():
+                        _dropped = 0
+                        for _tidx, _tr in _treated.iterrows():
                             _avail = _control.loc[~_control.index.isin(_used)]
                             if _avail.empty:
+                                _dropped += 1
                                 continue
                             _dist = (_avail["ps"] - _tr["ps"]).abs()
+                            if _cal is not None:
+                                _in_cal = _dist[_dist <= _cal]
+                                if _in_cal.empty:
+                                    # M8：卡尺内无匹配时丢弃该处理单元，而不是强制突破卡尺
+                                    _dropped += 1
+                                    continue
+                                _dist = _in_cal
                             _best = _dist.idxmin()
                             _matched_idx.append(_best)
+                            _mt_pairs.append(_tidx)
                             _used.add(_best)
-                        _matched_ctrl = _control.loc[[i for i in _matched_idx if i in _control.index]]
-                        _att = float(_treated[_y_var].mean() - _matched_ctrl[_y_var].mean())
+                        if not _matched_idx:
+                            st.error("没有任何成功匹配（卡尺过小或两组倾向得分分布差异过大），请调整卡尺或协变量。")
+                            st.stop()
+                        if _dropped:
+                            st.warning(f"{_dropped} 个处理单元因卡尺内无可用对照而被丢弃。")
+                        _matched_ctrl = _control.loc[_matched_idx]
+                        _treated_m = _treated.loc[_mt_pairs]
+                        _att = float(_treated_m[_y_var].mean() - _matched_ctrl[_y_var].mean())
                         _bal_rows = []
                         for _c in _psm_covs:
                             _bt = _treated[_c].mean()
                             _bc = _control[_c].mean()
+                            _bt_m = _treated_m[_c].mean()
                             _bc_m = _matched_ctrl[_c].mean()
                             _sd = (_treated[_c].std() + _control[_c].std()) / 2
-                            _sd_m = (_treated[_c].std() + _matched_ctrl[_c].std()) / 2
-                            _bal_rows.append({"协变量": _c, "匹配前标准化差": round(abs(_bt - _bc) / _sd, 3) if _sd else np.nan, "匹配后标准化差": round(abs(_bt - _bc_m) / _sd_m, 3) if _sd_m else np.nan})
+                            _sd_m = (_treated_m[_c].std() + _matched_ctrl[_c].std()) / 2
+                            _bal_rows.append({"协变量": _c, "匹配前标准化差": round(abs(_bt - _bc) / _sd, 3) if _sd else np.nan, "匹配后标准化差": round(abs(_bt_m - _bc_m) / _sd_m, 3) if _sd_m else np.nan})
                         _bal = pd.DataFrame(_bal_rows)
                         st.markdown("##### 平衡性检验（标准化均值差，<0.1 较好）")
                         _show_table(_bal, "psm_balance.xlsx", "PSM平衡")
-                        st.success(f"ATT = {_att:.4f}（处理组相比匹配后对照组的效应）")
+                        st.success(f"ATT = {_att:.4f}（处理组相比匹配后对照组的效应，匹配对数 = {len(_matched_idx)}）")
                     except Exception as _e:
                         st.error(f"PSM 出错：{_e}")
                         st.code(traceback.format_exc())
@@ -3410,7 +3501,7 @@ elif page == "6. 内生性检验":
                 "输出第一阶段 Probit 回归、逆米尔斯比率、第二阶段校正回归。"
             )
             _sel_dep = st.selectbox("选择方程被解释变量（0/1，是否被观测到）", options=_all_cols, key="heck_sel")
-            _excl = st.selectbox("排他性变量（仅出现在选择方程）", options=_num_cols, key="heck_excl")
+            _excl = _safe_selectbox("排他性变量（仅出现在选择方程）", options=_num_cols, key="heck_excl")
             if st.button("▶️ 运行 Heckman 两步法", key="run_heck"):
                 if not _sel_dep or not _excl or not _y_var:
                     st.warning("请选择选择方程因变量、排他性变量与 Y。")
@@ -3423,7 +3514,8 @@ elif page == "6. 内生性检验":
                         _dp = _dp[_dp[_sel_dep].isin([0, 1])]
                         _Xs = sm.add_constant(_dp[[_excl] + _control_vars])
                         _probit = sm.Probit(_dp[_sel_dep], _Xs).fit(disp=0)
-                        _xb = _probit.predict(_Xs)
+                        # predict() 返回的是概率，IMR 必须基于线性指标 Xβ 计算
+                        _xb = _Xs.values @ _probit.params.values
                         _imr = stats.norm.pdf(_xb) / stats.norm.cdf(_xb)
                         _dp["__imr__"] = _imr
                         _sub = _dp[_dp[_sel_dep] == 1].copy()
@@ -3455,7 +3547,7 @@ elif page == "6. 内生性检验":
                 "以估计处理效应时使用。利用机器学习模型（Lasso、随机森林）在第一阶段去偏，得到因果估计。"
                 "需指定处理变量、结果变量和高维控制变量集合。"
             )
-            _dml_treat = st.selectbox("处理变量 (D)", options=_num_cols, key="dml_d")
+            _dml_treat = _safe_selectbox("处理变量 (D)", options=_num_cols, key="dml_d")
             _dml_ml = st.selectbox("机器学习模型", ["Lasso", "随机森林"], key="dml_ml")
             _n_folds = st.number_input("交叉验证折数", min_value=2, max_value=10, value=5, step=1, key="dml_folds")
             if st.button("▶️ 运行双重机器学习", key="run_dml"):
@@ -3488,9 +3580,10 @@ elif page == "6. 内生性检验":
                         _Dres = _Dv - _Dhat
                         # 第二阶段：Yres ~ Dres
                         _dml_ols = sm.OLS(_Yres, sm.add_constant(_Dres)).fit(cov_type="HC1")
-                        _theta = _dml_ols.params[0]
-                        _se = _dml_ols.bse[0]
-                        _pval = _dml_ols.pvalues[0]
+                        # add_constant 将常数项置于第 0 列，第 1 列才是处理变量系数 θ
+                        _theta = _dml_ols.params.iloc[1]
+                        _se = _dml_ols.bse.iloc[1]
+                        _pval = _dml_ols.pvalues.iloc[1]
                         _ci_l = _theta - 1.96 * _se
                         _ci_u = _theta + 1.96 * _se
                         _disp = pd.DataFrame([
@@ -3794,29 +3887,11 @@ elif page == "8. RDD":
     _num_cols = [c for c in _df_panel.select_dtypes(include=[np.number]).columns if c not in [_col_id, _col_year]]
     _all_cols = _df_panel.columns.tolist()
 
-    def _fmt_coef(param, se, pval):
-        stars = "***" if pval < 0.01 else "**" if pval < 0.05 else "*" if pval < 0.1 else ""
-        return f"{param:.4f}{stars}\n({se:.4f})"
-
-    def _show_table(display_df, fname, sheet="结果"):
-        st.dataframe(display_df, use_container_width=True)
-        _output = BytesIO()
-        with pd.ExcelWriter(_output, engine="openpyxl") as writer:
-            display_df.to_excel(writer, index=False, sheet_name=sheet)
-        _output.seek(0)
-        st.download_button(
-            label="⬇️ 下载结果 (Excel)",
-            data=_output,
-            file_name=fname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"dl_{fname}",
-        )
-
     col_left, col_right = st.columns([1, 1.5])
     with col_left:
         st.subheader("模型设定")
-        _y_var = st.selectbox("结果变量 (Y)", options=_num_cols, key="rdd_y")
-        _run_col = st.selectbox("驱动变量 (Running variable)", options=_num_cols, key="rdd_run")
+        _y_var = _safe_selectbox("结果变量 (Y)", options=_num_cols, key="rdd_y")
+        _run_col = _safe_selectbox("驱动变量 (Running variable)", options=_num_cols, key="rdd_run")
         _cutoff = st.number_input("断点阈值 (Cutoff)", value=0.0, step=0.1, key="rdd_cutoff")
         _bw = st.number_input("带宽 (Bandwidth)", value=1.0, step=0.1, min_value=0.01, key="rdd_bw")
         _poly = st.selectbox("多项式阶数", options=["局部线性 (1阶)", "局部二次 (2阶)"], key="rdd_poly")
@@ -3833,6 +3908,34 @@ elif page == "8. RDD":
                 _dp[_run_col] = pd.to_numeric(_dp[_run_col], errors="coerce")
                 _dp[_y_var] = pd.to_numeric(_dp[_y_var], errors="coerce")
                 _dp = _dp.dropna(subset=[_run_col, _y_var])
+
+                # M7：McCrary 密度操纵检验（近似版）——断点两侧等宽窗口频数是否连续
+                try:
+                    _rng_mc = float(_dp[_run_col].max() - _dp[_run_col].min())
+                    if _rng_mc > 0:
+                        _h_mc = _rng_mc / max(20, min(50, int(np.sqrt(len(_dp)))))
+                        _vals_mc = _dp[_run_col].to_numpy()
+                        _cnt_l = int(((_vals_mc >= _cutoff - _h_mc) & (_vals_mc < _cutoff)).sum())
+                        _cnt_r = int(((_vals_mc >= _cutoff) & (_vals_mc < _cutoff + _h_mc)).sum())
+                        _tot_mc = _cnt_l + _cnt_r
+                        if _tot_mc > 0:
+                            _p_mc = float(min(1.0, 2 * min(
+                                stats.binom.cdf(_cnt_l, _tot_mc, 0.5),
+                                1 - stats.binom.cdf(_cnt_l - 1, _tot_mc, 0.5),
+                            )))
+                            if _p_mc < 0.1:
+                                st.warning(
+                                    f"⚠️ 操纵检验（McCrary 近似）：断点两侧等宽窗口频数差异明显"
+                                    f"（左 {_cnt_l} vs 右 {_cnt_r}，双侧二项检验 p = {_p_mc:.3f}），"
+                                    f"驱动变量可能存在人为操纵，RDD 结论需谨慎。"
+                                )
+                            else:
+                                st.caption(
+                                    f"操纵检验（McCrary 近似）：断点两侧密度无显著差异"
+                                    f"（左 {_cnt_l} vs 右 {_cnt_r}，p = {_p_mc:.3f}）。"
+                                )
+                except Exception:
+                    pass
 
                 # 带宽截断
                 _sub = _dp[(_dp[_run_col] >= _cutoff - _bw) & (_dp[_run_col] <= _cutoff + _bw)].copy()
@@ -3985,10 +4088,6 @@ elif page == "8. RDD":
 #                    第九章：机制分析（中介 / 调节 / 门槛）
 # ================================================================
 elif page == "9. 机制分析（中介/调节/门槛）":
-    import statsmodels.api as sm
-    from scipy.stats import norm
-    from io import BytesIO
-
     st.header("机制分析：中介效应 / 调节效应 / 门槛回归")
 
     if st.session_state.merged_df is None:
@@ -4018,12 +4117,14 @@ elif page == "9. 机制分析（中介/调节/门槛）":
     # ------------------- 1. 中介效应 -------------------
     if _mech == "中介效应（Mediation）":
         st.subheader("中介效应分析（Baron-Kenny + Bootstrap）")
-        _dv = st.selectbox("结果变量 (Y)", _num_cols, key="med_y")
-        _iv = st.selectbox("核心解释变量 (X)", [c for c in _num_cols if c != _dv], key="med_x")
-        _mv = st.selectbox("中介变量 (M)", [c for c in _num_cols if c not in [_dv, _iv]], key="med_m")
+        st.caption("说明：本模块为混合 OLS（Baron-Kenny）实现，未纳入个体/时间固定效应（L13），面板结构较强时建议结合内生性页面的面板方法交叉验证。")
+        _dv = _safe_selectbox("结果变量 (Y)", _num_cols, key="med_y")
+        _iv = _safe_selectbox("核心解释变量 (X)", [c for c in _num_cols if c != _dv], key="med_x")
+        _mv = _safe_selectbox("中介变量 (M)", [c for c in _num_cols if c not in [_dv, _iv]], key="med_m")
         _ctr = st.multiselect("控制变量", [c for c in _num_cols if c not in [_dv, _iv, _mv]], key="med_c")
         _clu_on = st.checkbox("按个体聚类稳健标准误", value=True, key="med_clu")
         _nboot = st.number_input("Bootstrap 次数", 100, 5000, 1000, 100, key="med_boot")
+        _b_cluster = st.checkbox("Bootstrap 按个体整群重抽样（面板数据推荐）", value=True, key="med_boot_clu")
         if st.button("▶️ 运行中介效应检验", key="run_med"):
             try:
                 _d = _clean_panel([_dv, _iv, _mv] + _ctr)
@@ -4046,14 +4147,26 @@ elif page == "9. 机制分析（中介/调节/门槛）":
                 _sob_se = np.sqrt(a**2 * b_se**2 + b**2 * a_se**2)
                 _sob_z = indirect / _sob_se if _sob_se > 0 else np.nan
                 _sob_p = 2 * (1 - norm.cdf(abs(_sob_z))) if not np.isnan(_sob_z) else np.nan
-                # Bootstrap（对样本重抽样）估计间接效应 a*b 的 CI
+                # Bootstrap 估计间接效应 a*b 的 CI（M16：支持按个体整群重抽样）
                 _rng = np.random.default_rng(20260815)
                 _idx = np.arange(len(_d))
+                _ent_u = _d.index.get_level_values(0).unique().to_numpy()
                 _boot = []
                 for _ in range(int(_nboot)):
-                    _s = _rng.choice(_idx, size=len(_idx), replace=True)
-                    _ds = _d.iloc[_s]
-                    _clu_s = _clu[_s] if _clu is not None else None
+                    if _b_cluster:
+                        _es = _rng.choice(_ent_u, size=len(_ent_u), replace=True)
+                        _frames = []
+                        _clabs = []
+                        for _k, _e in enumerate(_es):
+                            _blk = _d.loc[[_e]]
+                            _frames.append(_blk)
+                            _clabs.extend([_k] * len(_blk))
+                        _ds = pd.concat(_frames)
+                        _clu_s = np.array(_clabs) if _clu is not None else None
+                    else:
+                        _s = _rng.choice(_idx, size=len(_idx), replace=True)
+                        _ds = _d.iloc[_s]
+                        _clu_s = _clu[_s] if _clu is not None else None
 
                     def _ols_b(y, X):
                         _Xc = sm.add_constant(X)
@@ -4090,9 +4203,9 @@ elif page == "9. 机制分析（中介/调节/门槛）":
     # ------------------- 2. 调节效应 -------------------
     elif _mech == "调节效应（Moderation）":
         st.subheader("调节效应分析（交互项 + 简单斜率）")
-        _dv = st.selectbox("结果变量 (Y)", _num_cols, key="mod_y")
-        _iv = st.selectbox("核心解释变量 (X)", [c for c in _num_cols if c != _dv], key="mod_x")
-        _wv = st.selectbox("调节变量 (W)", [c for c in _num_cols if c not in [_dv, _iv]], key="mod_w")
+        _dv = _safe_selectbox("结果变量 (Y)", _num_cols, key="mod_y")
+        _iv = _safe_selectbox("核心解释变量 (X)", [c for c in _num_cols if c != _dv], key="mod_x")
+        _wv = _safe_selectbox("调节变量 (W)", [c for c in _num_cols if c not in [_dv, _iv]], key="mod_w")
         _ctr = st.multiselect("控制变量", [c for c in _num_cols if c not in [_dv, _iv, _wv]], key="mod_c")
         _clu_on = st.checkbox("按个体聚类稳健标准误", value=True, key="mod_clu")
         if st.button("▶️ 运行调节效应检验", key="run_mod"):
@@ -4138,11 +4251,14 @@ elif page == "9. 机制分析（中介/调节/门槛）":
     # ------------------- 3. 门槛回归（Hansen 单门槛） -------------------
     else:
         st.subheader("门槛回归（Hansen 单门槛 + Bootstrap 显著性 + 95% CI）")
-        _dv = st.selectbox("结果变量 (Y)", _num_cols, key="th_y")
-        _iv = st.selectbox("核心解释变量 (X)", [c for c in _num_cols if c != _dv], key="th_x")
-        _qv = st.selectbox("门槛变量 (Q)", [c for c in _num_cols if c not in [_dv, _iv]], key="th_q")
+        _dv = _safe_selectbox("结果变量 (Y)", _num_cols, key="th_y")
+        _iv = _safe_selectbox("核心解释变量 (X)", [c for c in _num_cols if c != _dv], key="th_x")
+        _qv = _safe_selectbox("门槛变量 (Q)", [c for c in _num_cols if c not in [_dv, _iv]], key="th_q")
         _ctr = st.multiselect("控制变量", [c for c in _num_cols if c not in [_dv, _iv, _qv]], key="th_c")
-        _clu_on = st.checkbox("按个体聚类稳健标准误", value=True, key="th_clu")
+        st.caption(
+            "说明：门槛估计采用网格搜索 + 最小二乘的手写实现，系数本身不提供聚类稳健标准误，"
+            "门槛存在性以 Bootstrap F 检验判断（L13：目前仅支持单门槛，多门槛请用 Stata 等工具复核）。"
+        )
         _nboot = st.number_input("Bootstrap 次数（显著性）", 100, 2000, 500, 100, key="th_boot")
         if st.button("▶️ 运行门槛回归", key="run_th"):
             try:
@@ -4218,10 +4334,6 @@ elif page == "9. 机制分析（中介/调节/门槛）":
 #                    第十章：空间计量（SLM / SEM / SDM）
 # ================================================================
 elif page == "10. 空间计量（SLM/SEM/SDM）":
-    import statsmodels.api as sm
-    from scipy.optimize import minimize_scalar
-    from io import BytesIO
-
     st.header("空间计量经济模型：SLM / SEM / SDM（极大似然估计）")
 
     if st.session_state.merged_df is None:
@@ -4247,19 +4359,22 @@ elif page == "10. 空间计量（SLM/SEM/SDM）":
     _n = len(_ents)
     st.info(f"空间计量使用截面数据：对面板按「{_col_id}」求时间均值，得到 {_n} 个空间单元。")
 
-    _y = st.selectbox("被解释变量 (Y)", _num_cols, key="sp_y")
+    _y = _safe_selectbox("被解释变量 (Y)", _num_cols, key="sp_y")
     _xs = st.multiselect("解释变量 (X)", [c for c in _num_cols if c != _y], key="sp_x")
-    _wtype = st.radio("空间权重构造方式", ["一阶邻接（按实体排序循环相邻）", "基于坐标的 K 近邻", "基于坐标的距离阈值"], key="sp_wt")
+    _wtype = st.radio("空间权重构造方式", ["基于坐标的 K 近邻", "基于坐标的距离阈值", "一阶邻接（按实体排序循环相邻）"], key="sp_wt")
     _W = None
     if _wtype == "一阶邻接（按实体排序循环相邻）":
-        st.caption("按实体排序，每个单元与前后相邻单元相连（循环），行标准化。适用于无坐标的面板截面。")
+        st.warning(
+            "⚠️ 该方式按实体在数据中的排序（如股票代码/公司代码）建立相邻关系，"
+            "通常没有真实的地理或经济含义，仅作为无坐标数据时的兜底方案，结果请谨慎解释。"
+        )
         _W = np.zeros((_n, _n))
         for _i in range(_n):
             _W[_i, (_i - 1) % _n] = 1.0
             _W[_i, (_i + 1) % _n] = 1.0
     else:
-        _lon = st.selectbox("经度列", _num_cols, key="sp_lon")
-        _lat = st.selectbox("纬度列", _num_cols, key="sp_lat")
+        _lon = _safe_selectbox("经度列", _num_cols, key="sp_lon")
+        _lat = _safe_selectbox("纬度列", _num_cols, key="sp_lat")
         _coords = _df_cross[[_lon, _lat]].to_numpy(float)
         from scipy.spatial.distance import cdist
         _D = cdist(_coords, _coords)
@@ -4287,6 +4402,38 @@ elif page == "10. 空间计量（SLM/SEM/SDM）":
         _eols = _yv - _Xc @ _bols
         _s2_ols = _eols @ _eols / _n
         _ll_ols = -0.5 * _n * (1 + np.log(2 * np.pi) + np.log(_s2_ols))
+
+        # M17：全局 Moran's I 检验（基于 OLS 残差）
+        try:
+            _S0 = float(_W.sum())
+            _S1 = 0.5 * float(((_W + _W.T) ** 2).sum())
+            _S2 = float(((_W.sum(axis=1) + _W.sum(axis=0)) ** 2).sum())
+            _e_m = _eols - _eols.mean()
+            _m_den = float(_e_m @ _e_m)
+            if _S0 > 0 and _m_den > 0 and _n > 3:
+                _I_val = (_n / _S0) * float(_e_m @ _W @ _e_m) / _m_den
+                _EI = -1.0 / (_n - 1)
+                _K = float(np.mean(_e_m ** 4)) / float(np.mean(_e_m ** 2)) ** 2
+                _varI = (
+                    _n ** 2 * ((_n ** 2 - 3 * _n + 3) * _S1 - _n * _S2 + 3 * _S0 ** 2)
+                    - _K * (_n ** 2 * _S1 - 2 * _n * _S2 + 6 * _S0 ** 2)
+                ) / ((_n - 1) * (_n - 2) * (_n - 3) * _S0 ** 2) - _EI ** 2
+                _zI = (_I_val - _EI) / np.sqrt(max(_varI, 1e-12))
+                _pI = 2 * (1 - norm.cdf(abs(_zI)))
+                _mor_df = pd.DataFrame([
+                    {"统计量": "Moran's I", "数值": f"{_I_val:.4f}"},
+                    {"统计量": "期望值 E[I]", "数值": f"{_EI:.4f}"},
+                    {"统计量": "z 值", "数值": f"{_zI:.4f}"},
+                    {"统计量": "p 值", "数值": f"{_pI:.4f}"},
+                ])
+                st.markdown("##### 全局 Moran's I 检验（OLS 残差）")
+                _show_table(_mor_df, "moran_i.xlsx", "MoranI")
+                if _pI < 0.05:
+                    st.info(f"Moran's I = {_I_val:.4f}（p = {_pI:.4f}）：残差存在显著空间自相关，空间模型有必要。")
+                else:
+                    st.caption(f"Moran's I = {_I_val:.4f}（p = {_pI:.4f}）：未检出显著空间自相关，空间模型收益可能有限。")
+        except Exception:
+            st.caption("Moran's I 计算失败（空间单元数可能过少）。")
 
         def _fit_slm(rho):
             _yl = _yv - rho * (_W @ _yv)
@@ -4367,10 +4514,6 @@ elif page == "10. 空间计量（SLM/SEM/SDM）":
 #                    第十一章：时间序列分析（ARIMA / VAR）
 # ================================================================
 elif page == "11. 时间序列分析":
-    import streamlit as st
-    import pandas as pd
-    import numpy as np
-    import traceback
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -4385,11 +4528,13 @@ elif page == "11. 时间序列分析":
         st.stop()
     df = st.session_state.merged_df
     year_col = st.session_state.get("col_year", None)
-    num_cols = [c for c in df.select_dtypes(include=[np.number]).columns]
+    # L11：年份列/ID 列不参与时间序列建模，避免把年份本身当作变量
+    _excl_cols = [c for c in [st.session_state.get("col_year"), st.session_state.get("col_id")] if c]
+    num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c not in _excl_cols]
 
     _ts_tabs = st.tabs(["🔻 ARIMA 单变量建模与预测", "🔺 VAR 向量自回归"])
     with _ts_tabs[0]:
-        _ar_y = st.selectbox("目标变量", options=num_cols, key="ar_y")
+        _ar_y = _safe_selectbox("目标变量", options=num_cols, key="ar_y")
         _agg = st.checkbox("按年份均值聚合为年度序列", value=True, key="ar_agg") if year_col else False
         _ar_p = st.number_input("AR 阶数 p", 0, 5, 1, key="ar_p")
         _ar_d = st.number_input("差分阶数 d", 0, 2, 1, key="ar_d")
