@@ -18,6 +18,57 @@ warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="实证派", layout="wide")
 
+# ==================== 使用情况埋点（自包含，绝不干扰主流程） ====================
+# 目的：记录每次成功产出结果的模块与规模，为产品迭代提供真实使用数据。
+# 设计原则：只用标准库（零新增依赖）；所有写入均有 try/except 兜底；
+# 云端文件系统为临时盘，重新部署会清空，请及时在侧边栏「📊 使用统计」导出 CSV 存档。
+import sqlite3 as _sqlite3
+from datetime import datetime as _dt_usage
+
+_USAGE_DB = "usage_analytics.db"
+
+
+@st.cache_resource
+def _usage_conn():
+    _c = _sqlite3.connect(_USAGE_DB, check_same_thread=False)
+    _c.execute(
+        "CREATE TABLE IF NOT EXISTS usage_log ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts TEXT, module TEXT, n_rows_out INTEGER, page TEXT)"
+    )
+    _c.commit()
+    return _c
+
+
+def _log_usage(module, n_rows_out=None, page=""):
+    """记录一次成功产出结果的事件；任何异常都静默忽略，绝不影响主流程。"""
+    try:
+        _c = _usage_conn()
+        _c.execute(
+            "INSERT INTO usage_log (ts, module, n_rows_out, page) VALUES (?,?,?,?)",
+            (
+                _dt_usage.now().isoformat(timespec="seconds"),
+                str(module),
+                int(n_rows_out) if n_rows_out is not None else None,
+                str(page)[:50],
+            ),
+        )
+        _c.commit()
+    except Exception:
+        pass
+
+
+def _read_usage():
+    """读取全部使用记录（最新在前）；失败时返回空表。"""
+    try:
+        return pd.read_sql_query(
+            "SELECT ts, module, n_rows_out, page FROM usage_log ORDER BY id DESC",
+            _usage_conn(),
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
 # ==================== 公共辅助函数（所有分析页面共享） ====================
 def _fmt_coef(param, se, pval):
     """格式化系数为 系数***(标准误) 学术格式。"""
@@ -51,6 +102,15 @@ def _show_table(display_df, fname, sheet="结果"):
         st.session_state.results = {}
     try:
         st.session_state.results[fname] = display_df.copy()
+    except Exception:
+        pass
+    # 使用埋点：记录每次成功产出结果（模块 / 输出行数 / 所在章节），绝不干扰展示
+    try:
+        _log_usage(
+            str(fname).replace(".xlsx", ""),
+            len(display_df),
+            page=globals().get("page", ""),
+        )
     except Exception:
         pass
     st.markdown(display_df.to_html(index=False, escape=True), unsafe_allow_html=True)
@@ -114,6 +174,28 @@ page = st.sidebar.radio(
     "请选择分析阶段：",
     ["1. 数据清洗", "2. 描述性统计与模型诊断", "3. 回归分析", "4. 指标测算", "5. 耦合协调度模型", "6. 内生性检验", "7. DID + 事件研究法", "8. RDD", "9. 机制分析（中介/调节/门槛）", "10. 空间计量（SLM/SEM/SDM）", "11. 时间序列分析", "12. 结构方程模型 SEM", "13. 双重机器学习 / 因果森林", "14. 多层线性模型", "15. P2 综合评价进阶（模糊/可变权/AHP）"],
 )
+
+# ==================== 使用统计面板（运营者视角，可导出 CSV 存档） ====================
+with st.sidebar.expander("📊 使用统计", expanded=False):
+    _u = _read_usage()
+    if _u.empty:
+        st.caption("暂无使用记录。运行任意分析后这里会自动累计。")
+    else:
+        _c1, _c2 = st.columns(2)
+        _c1.metric("累计分析次数", int(len(_u)))
+        _c2.metric("覆盖模块数", int(_u["module"].nunique()))
+        st.dataframe(
+            _u["module"].value_counts().rename_axis("模块").reset_index(name="次数").head(10),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("云端为临时存储，重新部署会清空，请及时导出存档。")
+        st.download_button(
+            "📥 导出使用日志 (CSV)",
+            _u.to_csv(index=False).encode("utf-8-sig"),
+            file_name="usage_log.csv",
+            mime="text/csv",
+        )
 
 # ==================== 初始化会话状态 ====================
 if "file_data" not in st.session_state:
@@ -1493,6 +1575,11 @@ elif page == "3. 回归分析":
                     if "results" not in st.session_state:
                         st.session_state.results = {}
                     st.session_state.results["regression_results.xlsx"] = display_df.copy()
+                    # 使用埋点：主回归不走 _show_table，单独记录
+                    try:
+                        _log_usage("regression_main", len(display_df), page=globals().get("page", ""))
+                    except Exception:
+                        pass
                     # ========== 导出 Excel ==========
                     st.subheader("📥 导出结果")
                     if not display_df.empty:

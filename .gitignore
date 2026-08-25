@@ -27,6 +27,10 @@ saved_*.json
 *.log
 streamlit.log
 
+# ---- 使用埋点数据库（运行时生成，含使用行为数据，切勿入库）----
+usage_analytics.db
+*.db
+
 # ---- 用户私有研究数据（体积大，非平台代码）----
 *.xlsx
 *.xls
