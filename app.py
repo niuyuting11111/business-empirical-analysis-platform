@@ -3580,10 +3580,11 @@ elif page == "6. 内生性检验":
                         _Dres = _Dv - _Dhat
                         # 第二阶段：Yres ~ Dres
                         _dml_ols = sm.OLS(_Yres, sm.add_constant(_Dres)).fit(cov_type="HC1")
-                        # add_constant 将常数项置于第 0 列，第 1 列才是处理变量系数 θ
-                        _theta = _dml_ols.params.iloc[1]
-                        _se = _dml_ols.bse.iloc[1]
-                        _pval = _dml_ols.pvalues.iloc[1]
+                        # add_constant 将常数项置于第 0 列，第 1 列才是处理变量系数 θ。
+                        # 输入为 ndarray 时 statsmodels 返回 ndarray（无 .iloc），用位置索引。
+                        _theta = np.asarray(_dml_ols.params)[1]
+                        _se = np.asarray(_dml_ols.bse)[1]
+                        _pval = np.asarray(_dml_ols.pvalues)[1]
                         _ci_l = _theta - 1.96 * _se
                         _ci_u = _theta + 1.96 * _se
                         _disp = pd.DataFrame([
@@ -3800,7 +3801,8 @@ elif page == "6. 内生性检验":
                                 _rows[_v] = {"变量": _v, "滞后变量模型": _fmt_coef(_lag.params[_v], _get_se(_lag, _v), _lag.pvalues[_v])}
                         _rows["观测数"] = {"变量": "观测数", "滞后变量模型": int(_lag.nobs)}
                         _order = _lag_cols + _control_vars + ["const", "观测数"]
-                        _disp = pd.DataFrame([_rows[k] for k in _order])
+                        # 双向固定效应会吸收常数项，const 不在 params 中 → 仅保留实际存在的行
+                        _disp = pd.DataFrame([_rows[k] for k in _order if k in _rows])
                         _disp = _disp[["变量", "滞后变量模型"]]
                         st.markdown("##### 滞后变量回归结果")
                         _show_table(_disp, "lagged_regressors.xlsx", "Lag")
