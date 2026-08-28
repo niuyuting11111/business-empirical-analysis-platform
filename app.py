@@ -69,6 +69,73 @@ def _read_usage():
         return pd.DataFrame()
 
 
+# ==================== 意见反馈箱（页面内直接提交，落盘为 .md 进收件箱） ====================
+# 与根目录「意见箱/」文件夹方案互通：表单提交 = 自动写好模板格式的 md 放进收件箱，
+# 维护者对 AI 助手说「读一下意见箱」即可统一处理。所有写入均有 try/except 兜底。
+import re as _re_fb
+
+_FEEDBACK_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "意见箱")
+_FEEDBACK_INBOX = os.path.join(_FEEDBACK_ROOT, "收件箱")
+
+
+def _feedback_inbox():
+    """确保收件箱目录存在并返回路径；失败返回 None（不影响主流程）。"""
+    try:
+        os.makedirs(_FEEDBACK_INBOX, exist_ok=True)
+        return _FEEDBACK_INBOX
+    except Exception:
+        return None
+
+
+def _sanitize_filename(s, maxlen=24):
+    """去掉不适合作文件名的字符，只保留中英文、数字、连字符与下划线。"""
+    s = _re_fb.sub(r"[\\/:*?\"<>|\s]+", "_", str(s).strip())
+    return s.strip("_")[:maxlen] or "未命名"
+
+
+def _save_feedback(name, contact, ftype, prio, title, body, steps):
+    """按意见模板格式把一条反馈写入收件箱；返回 (路径, 内容, 错误信息)。"""
+    inbox = _feedback_inbox()
+    if inbox is None:
+        return None, None, "无法创建收件箱目录（权限不足或运行环境受限）"
+    now = _dt_usage.now()
+    fname = "%s_%s_%s.md" % (
+        now.strftime("%Y-%m-%d_%H%M"),
+        _sanitize_filename(name),
+        _sanitize_filename(title),
+    )
+    content = (
+        "# 意见 / 问题\n\n"
+        "- 提交人：%s\n"
+        "- 联系方式：%s\n"
+        "- 日期：%s\n"
+        "- 类型：%s\n"
+        "- 优先级：%s\n\n"
+        "## 一句话标题\n\n%s\n\n"
+        "## 发生了什么 / 我想要什么\n\n%s\n\n"
+        "## 复现步骤 / 补充材料（可选）\n\n%s\n\n"
+        "---\n\n"
+        "## 处理结果（由 AI 助手填写，提交时留空）\n\n"
+        "- 处理状态：\n- 处理方式：\n- 处理说明：\n- 处理日期：\n"
+    ) % (
+        name,
+        contact or "未提供",
+        now.strftime("%Y-%m-%d %H:%M"),
+        ftype,
+        prio,
+        title,
+        body.strip(),
+        steps.strip() or "（未提供）",
+    )
+    path = os.path.join(inbox, fname)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path, content, None
+    except Exception as e:
+        return None, content, str(e)
+
+
 # ==================== 公共辅助函数（所有分析页面共享） ====================
 def _fmt_coef(param, se, pval):
     """格式化系数为 系数***(标准误) 学术格式。"""
@@ -172,7 +239,7 @@ st.title("📊 实证派")
 st.sidebar.title("📑 分析目录")
 page = st.sidebar.radio(
     "请选择分析阶段：",
-    ["1. 数据清洗", "2. 描述性统计与模型诊断", "3. 回归分析", "4. 指标测算", "5. 耦合协调度模型", "6. 内生性检验", "7. DID + 事件研究法", "8. RDD", "9. 机制分析（中介/调节/门槛）", "10. 空间计量（SLM/SEM/SDM）", "11. 时间序列分析", "12. 结构方程模型 SEM", "13. 双重机器学习 / 因果森林", "14. 多层线性模型", "15. P2 综合评价进阶（模糊/可变权/AHP）"],
+    ["1. 数据清洗", "2. 描述性统计与模型诊断", "3. 回归分析", "4. 指标测算", "5. 耦合协调度模型", "6. 内生性检验", "7. DID + 事件研究法", "8. RDD", "9. 机制分析（中介/调节/门槛）", "10. 空间计量（SLM/SEM/SDM）", "11. 时间序列分析", "12. 结构方程模型 SEM", "13. 双重机器学习 / 因果森林", "14. 多层线性模型", "15. P2 综合评价进阶（模糊/可变权/AHP）", "📮 意见反馈（问题/建议）"],
 )
 
 # ==================== 使用统计面板（运营者视角，可导出 CSV 存档） ====================
@@ -5001,3 +5068,91 @@ elif page == "15. P2 综合评价进阶（模糊/可变权/AHP）":
                 st.error(f"AHP 计算失败：{_e}")
                 st.code(traceback.format_exc())
 
+
+# ================================================================
+#                    意见反馈（页面内表单 → 自动进收件箱）
+# ================================================================
+elif page == "📮 意见反馈（问题/建议）":
+    st.header("📮 意见反馈箱")
+    st.markdown(
+        "使用平台时遇到任何问题、或有功能建议，直接在下面填写提交。"
+        "提交后会自动存入维护者的意见箱收件箱，AI 助手会统一读取、处理并答复，无需手写文档。"
+    )
+
+    with st.form("feedback_form", clear_on_submit=True):
+        _fb_c1, _fb_c2 = st.columns(2)
+        _fb_name = _fb_c1.text_input("你的称呼（必填）", placeholder="例如：张三")
+        _fb_contact = _fb_c2.text_input("联系方式（选填）", placeholder="微信 / 邮箱，便于回访")
+        _fb_c3, _fb_c4 = st.columns(2)
+        _fb_type = _fb_c3.radio("类型", ["问题", "建议", "新功能"], horizontal=True)
+        _fb_prio = _fb_c4.radio("优先级", ["中", "高", "低"], horizontal=True)
+        _fb_title = st.text_input(
+            "一句话标题（必填）",
+            placeholder="用一句话概括问题或诉求，例如：回归结果表的下载按钮没反应",
+        )
+        _fb_body = st.text_area(
+            "详细描述（必填）",
+            height=150,
+            placeholder="请尽量写清楚：在哪个页面、做了哪些操作、看到了什么、期望看到什么。",
+        )
+        _fb_steps = st.text_area(
+            "复现步骤 / 补充材料（选填）",
+            height=90,
+            placeholder="可粘贴报错信息；截图请提交后另行发送给维护者。",
+        )
+        _fb_submit = st.form_submit_button("📨 提交反馈", type="primary")
+
+    if _fb_submit:
+        _fb_missing = [
+            label
+            for label, val in [("你的称呼", _fb_name), ("一句话标题", _fb_title), ("详细描述", _fb_body)]
+            if not str(val).strip()
+        ]
+        if _fb_missing:
+            st.warning("还差这几项没填：" + "、".join(_fb_missing))
+        else:
+            _fb_path, _fb_content, _fb_err = _save_feedback(
+                _fb_name.strip(), _fb_contact.strip(), _fb_type, _fb_prio,
+                _fb_title.strip(), _fb_body, _fb_steps,
+            )
+            if _fb_path:
+                st.success("提交成功！已存入收件箱：%s" % os.path.basename(_fb_path))
+                st.caption("维护者会让 AI 助手「读一下意见箱」统一处理，处理结果会写回这条记录。")
+            else:
+                st.error("自动保存失败：%s。可点下方按钮下载这条反馈，直接发给维护者。" % _fb_err)
+            if _fb_content:
+                st.download_button(
+                    "📥 下载这条反馈 (.md)（留档备用）",
+                    _fb_content.encode("utf-8"),
+                    file_name="意见反馈.md",
+                    mime="text/markdown",
+                    key="fb_dl",
+                )
+
+    st.divider()
+    st.subheader("📬 收件箱里已有的反馈")
+    _fb_inbox_dir = _feedback_inbox()
+    _fb_items = []
+    if _fb_inbox_dir:
+        try:
+            for _fn in sorted(os.listdir(_fb_inbox_dir), reverse=True):
+                if _fn.endswith(".md"):
+                    _fb_items.append(
+                        {
+                            "文件": _fn,
+                            "提交时间": _dt_usage.fromtimestamp(
+                                os.path.getmtime(os.path.join(_fb_inbox_dir, _fn))
+                            ).strftime("%Y-%m-%d %H:%M"),
+                        }
+                    )
+        except Exception:
+            pass
+    if _fb_items:
+        st.dataframe(pd.DataFrame(_fb_items).head(10), use_container_width=True, hide_index=True)
+        st.caption("共 %d 条。处理进展由维护者的 AI 助手统一更新。" % len(_fb_items))
+    else:
+        st.caption("收件箱还是空的，欢迎提交第一条反馈。")
+    if _IS_STREAMLIT_CLOUD:
+        st.caption("⚠️ 云端环境提示：文件为临时存储，重新部署会清空，提交后建议同时点「下载这条反馈」留档。")
+    else:
+        st.caption("本地目录：%s" % (_fb_inbox_dir or "（暂不可用）"))
