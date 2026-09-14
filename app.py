@@ -3,13 +3,10 @@ import pandas as pd
 import numpy as np
 from io import BytesIO
 from scipy.stats import skew
-from linearmodels.panel import PanelOLS, RandomEffects
 import warnings
 import traceback
 import os
 import json
-import arch.unitroot as au
-from statsmodels.tsa.stattools import adfuller
 from scipy.stats import norm
 import statsmodels.api as sm
 from scipy import stats
@@ -28,22 +25,27 @@ from datetime import datetime as _dt_usage
 _USAGE_DB = "usage_analytics.db"
 
 
-@st.cache_resource
 def _usage_conn():
-    _c = _sqlite3.connect(_USAGE_DB, check_same_thread=False)
-    _c.execute(
-        "CREATE TABLE IF NOT EXISTS usage_log ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "ts TEXT, module TEXT, n_rows_out INTEGER, page TEXT)"
-    )
-    _c.commit()
-    return _c
+    """打开 SQLite 连接；云端或权限受限时返回 None，绝不干扰主流程。"""
+    try:
+        _c = _sqlite3.connect(_USAGE_DB, check_same_thread=False)
+        _c.execute(
+            "CREATE TABLE IF NOT EXISTS usage_log ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts TEXT, module TEXT, n_rows_out INTEGER, page TEXT)"
+        )
+        _c.commit()
+        return _c
+    except Exception:
+        return None
 
 
 def _log_usage(module, n_rows_out=None, page=""):
     """记录一次成功产出结果的事件；任何异常都静默忽略，绝不影响主流程。"""
     try:
         _c = _usage_conn()
+        if _c is None:
+            return
         _c.execute(
             "INSERT INTO usage_log (ts, module, n_rows_out, page) VALUES (?,?,?,?)",
             (
@@ -61,9 +63,12 @@ def _log_usage(module, n_rows_out=None, page=""):
 def _read_usage():
     """读取全部使用记录（最新在前）；失败时返回空表。"""
     try:
+        _c = _usage_conn()
+        if _c is None:
+            return pd.DataFrame()
         return pd.read_sql_query(
             "SELECT ts, module, n_rows_out, page FROM usage_log ORDER BY id DESC",
-            _usage_conn(),
+            _c,
         )
     except Exception:
         return pd.DataFrame()
@@ -891,6 +896,8 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
 
         # ========== 选项卡1：单序列单位根检验 ==========
         with tab1:
+            import arch.unitroot as au
+
             st.markdown("**适用于**：任意数据。对选中的变量逐个进行 ADF/PP/KPSS 检验。")
             st.caption(
                 "💡 可同时选择多个变量，系统将对每个变量**分别**进行单序列单位根检验，结果汇总在同一张表格中。"
@@ -970,6 +977,8 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
 
         # ========== 选项卡2：面板单位根检验（LLC） ==========
         with tab2:
+            from statsmodels.tsa.stattools import adfuller
+
             st.markdown(
                 "**适用于**：面板数据（同时有个体ID和时间维度）。LLC 检验是目前最主流的面板单位根检验方法。"
             )
@@ -1250,6 +1259,8 @@ elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也�
 #                    第三阶段：回归分析（核心部分）
 # ================================================================
 elif page == "3. 回归分析":
+    from linearmodels.panel import PanelOLS, RandomEffects
+
     st.header("📈 回归分析与结果导出")
 
     # --- 数据状态检查（审查项 M22：取消 data_panel 双轨，统一使用 merged_df） ---
@@ -2498,6 +2509,8 @@ elif page == "5. 耦合协调度模型":
 #                    第七章：双重差分 DID + 事件研究法
 # ================================================================
 elif page == "7. DID + 事件研究法":
+    from linearmodels.panel import PanelOLS
+
     st.header("第七章：双重差分 (DID) 与事件研究法")
 
     # ---------- 数据与变量准备（动态获取，不硬编码） ----------
