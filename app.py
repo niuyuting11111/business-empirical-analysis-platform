@@ -23,6 +23,8 @@ from scipy import stats
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="实证派", layout="wide")
+# 构建版本标记：用于确认云端实际运行的代码版本（解决"代码已更新但页面还是旧版"的排查难题）
+_APP_BUILD = "v2026.09.15-r3"
 
 # ==================== 使用情况埋点（自包含，绝不干扰主流程） ====================
 # 目的：记录每次成功产出结果的模块与规模，为产品迭代提供真实使用数据。
@@ -252,6 +254,7 @@ st.title("📊 实证派")
 try:
     # ==================== 侧边栏导航 ====================
     st.sidebar.title("📑 分析目录")
+    st.sidebar.caption("构建版本: %s" % _APP_BUILD)
     page = st.sidebar.radio(
         "请选择分析阶段：",
         ["1. 数据清洗", "2. 描述性统计与模型诊断", "3. 回归分析", "4. 指标测算", "5. 耦合协调度模型", "6. 内生性检验", "7. DID + 事件研究法", "8. RDD", "9. 机制分析（中介/调节/门槛）", "10. 空间计量（SLM/SEM/SDM）", "11. 时间序列分析", "12. 结构方程模型 SEM", "13. 双重机器学习 / 因果森林", "14. 多层线性模型", "15. P2 综合评价进阶（模糊/可变权/AHP）", "📮 意见反馈（问题/建议）"],
@@ -5198,5 +5201,8 @@ y ~ eta1 + eta2
             st.caption("本地目录：%s" % (_fb_inbox_dir or "（暂不可用）"))
 
 except Exception as _cloud_e:
+    # st.stop() 抛出的 StopException 继承自 Exception，属于正常控制流，必须原样交还
+    if type(_cloud_e).__name__ == "StopException":
+        raise
     st.error("⚠️ 云端运行时捕获到异常（请把下方内容截图/复制发给我）：")
     st.exception(_cloud_e)
