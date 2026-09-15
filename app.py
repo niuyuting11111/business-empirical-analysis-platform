@@ -8,7 +8,16 @@ import traceback
 import os
 import json
 from scipy.stats import norm
-import statsmodels.api as sm
+# statsmodels 按需懒加载：降低启动内存占用，避免云端 1GB 免费档 OOM / 启动超时
+class _LazyStatsmodels:
+    _mod = None
+
+    def __getattr__(self, name):
+        if _LazyStatsmodels._mod is None:
+            import statsmodels.api as _sm
+            _LazyStatsmodels._mod = _sm
+        return getattr(_LazyStatsmodels._mod, name)
+sm = _LazyStatsmodels()
 from scipy import stats
 
 warnings.filterwarnings("ignore")
