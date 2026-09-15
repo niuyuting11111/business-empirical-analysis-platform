@@ -106,6 +106,38 @@ git push -u origin main
 
 ---
 
+---
+
+## 🚑 应用卡死（Error 状态）如何自救
+
+> 经验结论：本仓库代码在流式云端依赖集下已通过 16/16 页面 + 真实启动验证，**"Oh no" 几乎都不是代码 bug，而是 Streamlit 免费云容器卡死**。
+> Reboot 只是重启同一个坏容器，**救不活**；必须从零删除重建。
+
+### A. 重建为 Public 应用（推荐，2 分钟）
+
+1. 打开 https://share.streamlit.io ，用 GitHub 登录。
+2. 旧应用卡片 → 右上 **⋮ → Delete**（清掉卡死状态）。
+3. 点 **"New app"**：
+   - **Repository**：选 `business-empirical-analysis-platform`
+   - **Branch**：`main`
+   - **Main file path**：`app.py`
+   - **App visibility**：选 **Public**（避免登录墙 + 更稳定）
+   - **Python version**：点 Advanced settings，无需手动选 —— 仓库根已放 `runtime.txt`（内容 `3.12`）会自动锁定 3.12。
+4. 点 **"Deploy!"**。首次构建约 2–5 分钟。
+
+### B. 上线后自检（确认跑的是最新代码）
+
+- 打开应用 → 侧边栏顶部应显示 **「构建版本： v2026.09.15-r3」**（代码内置 `_APP_BUILD` 标记）。
+- 看到该版本号 = 云端确实跑的是最新提交；看不到 = 没构建成功（回看 Logs）。
+
+### C. 以后再 Error，别反复 Reboot
+
+- 先去 app 详情页 **右下角 "Manage app"** 看日志最后几行：
+  - 有红色 traceback → 截图发维护者，精准修。
+  - 仍是光秃秃 "Oh no" 且日志无用 → 直接 **Delete + New**（见 A），比反复折腾快。
+
+---
+
 ## 🔧 排错指南
 
 | 现象 | 可能原因 | 解决 |
@@ -127,6 +159,7 @@ git push -u origin main
 - [x] API Key 通过 `st.secrets["OPENAI_API_KEY"]` 读取（当前无 AI 功能，模板已预置）
 - [x] `requirements.txt` 所有版本均已锁定，并在 PyPI 验证存在
 - [x] `.gitignore` 已忽略 `secrets.toml`、`.env`、`__pycache__`、`*.pyc`、`venv/`
-- [ ] Streamlit Cloud 部署时需在 Advanced settings 中手动选择 Python 3.12（Cloud 可能默认 3.14）
-- [x] 异常处理完整，关键计算均有 `try/except` 兜底
+- [x] 根目录 `runtime.txt` 已锁定 Python 3.12，部署时无需手动选版本
+- [x] app.py 内置 `_APP_BUILD` 构建版本标记（侧边栏显示），用于确认云端代码版本
+- [x] 异常处理完整，关键计算均有 `try/except` 兜底；全局 handler 已放行 `st.stop()` 的 StopException
 - [x] 无 AI 功能时应用可正常降级运行，不崩溃
