@@ -15,3 +15,7 @@ gatherUsageStats = false
 [theme]
 # 最小主题：与 Streamlit 默认保持一致，仅声明主色便于识别
 primaryColor = "#FF4B4B"
+
+[client]
+# 云端部署时把真实报错直接展示在页面上（所有者可见），便于排障
+showErrorDetails = true
