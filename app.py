@@ -4777,7 +4777,15 @@ elif page == "11. 时间序列分析":
 
 
 elif page == "12. 结构方程模型 SEM":
-    from semopy import Model, calc_stats
+    try:
+        from semopy import Model, calc_stats
+    except Exception as _imp_err:
+        st.error(
+            "📐 SEM 功能依赖 semopy 库。当前云端为精简部署（该重型依赖已移出云 requirements），"
+            "此页面请下载本仓库后在本地运行 `pip install -r requirements-full.txt` 使用。"
+        )
+        st.code(str(_imp_err))
+        st.stop()
     st.header("📐 第十二章：问卷结构方程模型（SEM / CFA）")
     st.caption("适用于量表/问卷数据：用 lavaan 风格语法定义测量模型（潜变量 =~ 指标）与结构模型（因变量 ~ 自变量），输出参数估计与拟合优度指标（CFI/TLI/RMSEA/SRMR/GFI/AGFI）。")
     if st.session_state.merged_df is None:
@@ -4827,7 +4835,16 @@ y ~ eta1 + eta2
 
 
 elif page == "13. 双重机器学习 / 因果森林":
-    from econml.dml import LinearDML, CausalForestDML
+    try:
+        from econml.dml import LinearDML, CausalForestDML
+    except Exception as _imp_err:
+        st.error(
+            "🌲 双重机器学习 / 因果森林依赖 econml 库（依赖树极重）。当前云端为精简部署"
+            "（该依赖已移出云 requirements），此页面请下载本仓库后在本地运行 "
+            "`pip install -r requirements-full.txt` 使用。"
+        )
+        st.code(str(_imp_err))
+        st.stop()
     from sklearn.ensemble import GradientBoostingRegressor
     from sklearn.linear_model import LogisticRegression
     import matplotlib
