@@ -122,7 +122,7 @@ git push -u origin main
    - **Branch**：`main`
    - **Main file path**：`app.py`
    - **App visibility**：选 **Public**（避免登录墙 + 更稳定）
-   - **Python version**：点 Advanced settings，无需手动选 —— 仓库根已放 `runtime.txt`（内容 `3.12`）会自动锁定 3.12。
+   - **Python version**：点 Advanced settings → 手动选 **3.12**（⚠️ runtime.txt 在 Streamlit Cloud 无效，不选会用默认 3.14，导致 pandas/numba 源码编译失败）
 4. 点 **"Deploy!"**。首次构建约 2–5 分钟。
 
 ### B. 上线后自检（确认跑的是最新代码）
@@ -159,7 +159,7 @@ git push -u origin main
 - [x] API Key 通过 `st.secrets["OPENAI_API_KEY"]` 读取（当前无 AI 功能，模板已预置）
 - [x] `requirements.txt` 所有版本均已锁定，并在 PyPI 验证存在
 - [x] `.gitignore` 已忽略 `secrets.toml`、`.env`、`__pycache__`、`*.pyc`、`venv/`
-- [x] 根目录 `runtime.txt` 已锁定 Python 3.12，部署时无需手动选版本
+- [ ] ⚠️ Streamlit Cloud 不支持 runtime.txt！部署时必须在 Advanced settings → Python version 手动选 **3.12**（默认 3.14 会导致 pandas 源码编译失败）
 - [x] app.py 内置 `_APP_BUILD` 构建版本标记（侧边栏显示），用于确认云端代码版本
 - [x] 异常处理完整，关键计算均有 `try/except` 兜底；全局 handler 已放行 `st.stop()` 的 StopException
 - [x] 无 AI 功能时应用可正常降级运行，不崩溃
