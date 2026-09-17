@@ -5,6 +5,9 @@
 [server]
 # 单文件上传上限（MB）：超大 Excel 会长时间卡死，限定为 100
 maxUploadSize = 100
+# WebSocket 消息大小上限（MB）：文件通过 WebSocket 传到后端，必须 >= maxUploadSize
+# 缺失或过小会导致云端上传报 AxiosError 400
+maxMessageSize = 200
 # 云端只读文件系统下避免无谓的写盘尝试
 enableStaticServing = false
 

@@ -357,6 +357,54 @@ try:
         # 审查项 M24：提示文件大小上限，避免超大文件长时间卡死（配合 .streamlit/config.toml 的 maxUploadSize）
         st.caption("💡 建议单个文件不超过 100MB；过大的文件请先在本地降采样或转为 CSV 后上传。")
 
+        # ===== 备用上传方式：粘贴数据（解决云端偶发 400 问题）=====
+        with st.expander("📋 备用方式：粘贴数据（如果上方文件上传失败请用这里）", expanded=False):
+            paste_tab1, paste_tab2 = st.tabs(["粘贴 CSV 文本", "粘贴 Excel 复制内容"])
+            with paste_tab1:
+                csv_text = st.text_area(
+                    "将 CSV 文件内容（含表头）直接粘贴到这里",
+                    height=150,
+                    help="从 Excel/CSV 中复制全部内容（Ctrl+A → Ctrl+C），然后粘贴到此处",
+                )
+                if st.button("加载粘贴的 CSV 数据", key="load_paste_csv", type="primary"):
+                    if csv_text.strip():
+                        try:
+                            from io import StringIO
+                            df_paste = pd.read_csv(StringIO(csv_text))
+                            paste_name = "pasted_data.csv"
+                            st.session_state.file_data[paste_name] = df_paste
+                            st.session_state._auto_loaded = False
+                            st.success(
+                                f"✅ 粘贴数据加载成功 | {df_paste.shape[0]}行 × {df_paste.shape[1]}列"
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ 解析粘贴数据失败: {str(e)}")
+                    else:
+                        st.warning("请先粘贴数据内容")
+            with paste_tab2:
+                tsv_text = st.text_area(
+                    "从 Excel 复制的数据（Tab 分隔）",
+                    height=150,
+                    help="在 Excel 中选中数据区域 → Ctrl+C → 粘贴到这里",
+                )
+                if st.button("加载粘贴的 Excel 数据", key="paste_excel_data", type="primary"):
+                    if tsv_text.strip():
+                        try:
+                            from io import StringIO
+                            df_paste = pd.read_csv(StringIO(tsv_text), sep="\t")
+                            paste_name = "pasted_data.xlsx"
+                            st.session_state.file_data[paste_name] = df_paste
+                            st.session_state._auto_loaded = False
+                            st.success(
+                                f"✅ 粘贴数据加载成功 | {df_paste.shape[0]}行 × {df_paste.shape[1]}列"
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ 解析粘贴数据失败: {str(e)}")
+                    else:
+                        st.warning("请先粘贴数据内容")
+
         # 文件删除后清理缓存（自动加载的数据不会被误清理）
         if (
             not uploaded_files
