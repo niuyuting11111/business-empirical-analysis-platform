@@ -155,6 +155,7 @@ git push -u origin main
 
 | 现象 | 可能原因 | 解决 |
 |------|----------|------|
+| ⚠️ curl 探测返回 303→auth/app | **不一定是登录墙！** public app 未登录首访也走 303→auth→`/-/login?payload`→种匿名 cookie→200 的流程 | 必须带 cookie 罐验证：`curl -sL -c c.txt -b c.txt URL`，最终 200 = public 正常；裸 303 切勿判定 private 或 Delete 重建（09-17 踩坑实录） |
 | `ModuleNotFoundError: No module named 'xxx'` | `requirements.txt` 漏写依赖 | 在本地补上对应包及版本，重新 push |
 | 安装超时 / 失败 | 某个包版本在 PyPI 不存在 | 核对 `requirements.txt` 中版本号是否在 PyPI 真实存在 |
 | `Error installing requirements` / 编译 pandas/numpy 失败 | Streamlit Cloud 默认 Python 版本过新（如 3.14），科学计算包尚无 wheels | 在 Cloud 的 App Settings → Python version 中改为 **3.12**，保存后 Reboot；如仍强制使用 3.14，需删除应用后重新部署并显式选 3.12 |
