@@ -138,6 +138,19 @@ git push -u origin main
 
 ---
 
+## 🌡️ 防止免费档「隔夜又打不开」（自动保活）
+
+> 现象根因：Streamlit Community Cloud **免费档**在一段时间无访问后会自动休眠（sleep），
+> 再次访问需冷启动唤醒，免费资源下常超时/失败 → 表现为「昨天能开、今天打不开」。
+
+- [x] 已添加 `.github/workflows/keepalive.yml`：**每 15 分钟**自动访问 `https://shizhengpai.streamlit.app/`，
+      刷新休眠计时器，避免隔夜睡死。
+- [x] 频率 15 分钟 = 约 1440 分钟/月，在 GitHub Actions 对 **private 仓库 2000 分钟/月免费额度**内。
+- 想彻底免维护：升级 Streamlit Cloud **付费档**（不会休眠、资源更足）。
+- 手动应急：若仍 sleep，直接刷新页面等 10~30 秒即可唤醒；若显示 error（非 sleeping），才是真卡死，走下方自救流程。
+
+---
+
 ## 🔧 排错指南
 
 | 现象 | 可能原因 | 解决 |
