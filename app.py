@@ -544,7 +544,7 @@ try:
         st.subheader("Step 3: 清洗参数设置")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown(f"**已选行业列**: {st.session_state.get('col_industry', '无')}")
+            st.markdown(f"**已选分组变量**: {st.session_state.get('col_industry', '无')}")
         with col2:
             st.session_state.fill_method = st.selectbox(
                 "缺失值处理方法",
@@ -558,19 +558,31 @@ try:
                 "自动对偏态变量取对数 ln(1+x)", value=True
             )
 
-        # 行业筛选
-        selected_industries = []
+        # 分组值筛选（根据 ID 列确定保留哪些个体/组别）
+        selected_groups = []
         if st.session_state.col_industry != "无":
-            col_industry = st.session_state.col_industry
-            all_industries = set()
+            col_group = st.session_state.col_industry
+            all_groups = set()
             for name, df in st.session_state.file_data.items():
-                if col_industry in df.columns:
-                    all_industries.update(df[col_industry].astype(str).unique())
-            all_industries = sorted(list(all_industries))
+                if col_group in df.columns:
+                    all_groups.update(df[col_group].astype(str).dropna().unique())
+            all_groups = sorted(list(all_groups))
+            
+            # 统计每组有多少观测值，帮助用户决策
+            group_counts = {}
+            for name, df in st.session_state.file_data.items():
+                if col_group in df.columns:
+                    for g, cnt in df[col_group].astype(str).value_counts().items():
+                        group_counts[g] = group_counts.get(g, 0) + cnt
+            
+            # 显示格式："行业名称 (n=123)"
+            options_with_count = [f"{g} (n={group_counts.get(g, '?')})" for g in all_groups]
+            
+            st.caption(f"💡 共发现 {len(all_groups)} 个分组值，可多选要保留的（留空=全部保留）")
             st.session_state.selected_industries = st.multiselect(
-                "保留的分组值",
-                options=all_industries,
-                default=all_industries[:3] if len(all_industries) >= 3 else all_industries,
+                f"筛选【{col_group}】的具体值（如特定行业/省份/城市）",
+                options=options_with_count,
+                default=[],  # 默认不筛选，保留全部
             )
 
         # Step 4: 执行清洗
@@ -589,6 +601,9 @@ try:
             do_winsorize = st.session_state.do_winsorize
             auto_log = st.session_state.auto_log
             selected_industries = st.session_state.selected_industries
+            # 去掉选项中的 "(n=xxx)" 计数后缀，提取原始分组值
+            import re
+            selected_groups_clean = [re.sub(r'\s*\(n=.*\)$', '', s) for s in selected_industries]
 
             if not col_id or not col_year:
                 st.error("请至少指定股票代码列和年份列！")
@@ -644,9 +659,9 @@ try:
                             & (merged[col_year] <= year_end)
                         ]
 
-                        if col_industry != "无" and selected_industries:
+                        if col_industry != "无" and selected_groups_clean:
                             merged = merged[
-                                merged[col_industry].astype(str).isin(selected_industries)
+                                merged[col_industry].astype(str).isin(selected_groups_clean)
                             ]
 
                         # 缺失值处理
