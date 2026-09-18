@@ -257,7 +257,7 @@ try:
     st.sidebar.caption("构建版本: %s" % _APP_BUILD)
     page = st.sidebar.radio(
         "请选择分析阶段：",
-        ["1. 数据清洗", "2. 描述性统计与模型诊断", "3. 回归分析", "4. 指标测算", "5. 耦合协调度模型", "6. 内生性检验", "7. DID + 事件研究法", "8. RDD", "9. 机制分析（中介/调节/门槛）", "10. 空间计量（SLM/SEM/SDM）", "11. 时间序列分析", "12. 结构方程模型 SEM", "13. 双重机器学习 / 因果森林", "14. 多层线性模型", "15. P2 综合评价进阶（模糊/可变权/AHP）", "📮 意见反馈（问题/建议）"],
+        ["1. 数据清洗", "2. 指标测算", "3. 描述性统计与模型诊断", "4. 回归分析", "5. 耦合协调度模型", "6. 内生性检验", "7. DID + 事件研究法", "8. RDD", "9. 机制分析（中介/调节/门槛）", "10. 空间计量（SLM/SEM/SDM）", "11. 时间序列分析", "12. 结构方程模型 SEM", "13. 双重机器学习 / 因果森林", "14. 多层线性模型", "15. P2 综合评价进阶（模糊/可变权/AHP）", "📮 意见反馈（问题/建议）"],
     )
 
     # ==================== 使用统计面板（运营者视角，可导出 CSV 存档） ====================
@@ -498,19 +498,19 @@ try:
                 index=0,
             )
             st.session_state.col_dv = st.multiselect(
-                "【因变量】（如TobinQ、ROA）", options=all_cols
+                "【因变量】", options=all_cols
             )
             st.session_state.col_iv = st.multiselect(
-                "【自变量】（如AI词频）", options=all_cols
+                "【自变量】", options=all_cols
             )
             st.session_state.col_cv = st.multiselect(
-                "【控制变量】（如Size、Lev）", options=all_cols
+                "【控制变量】", options=all_cols
             )
             st.session_state.col_mv = st.multiselect(
-                "【中介变量】（如研发投入）", options=all_cols
+                "【中介变量】", options=all_cols
             )
             st.session_state.col_industry = st.selectbox(
-                "【行业代码】列（可选）", options=["无"] + all_cols
+                "【分组变量】（行业/省份/国家等，可选）", options=["无"] + all_cols
             )
 
             # 年份范围（col_year 必为真实列名，无需再判"无"，审查项 L3）
@@ -568,7 +568,7 @@ try:
                     all_industries.update(df[col_industry].astype(str).unique())
             all_industries = sorted(list(all_industries))
             st.session_state.selected_industries = st.multiselect(
-                "保留的行业代码",
+                "保留的分组值",
                 options=all_industries,
                 default=all_industries[:3] if len(all_industries) >= 3 else all_industries,
             )
@@ -653,7 +653,7 @@ try:
                         num_cols = merged.select_dtypes(
                             include=[np.number]
                         ).columns.tolist()
-                        # 审查项 M11：行业代码列是分类变量，不得参与插值/缩尾/取对数
+                        # 审查项 M11：分组变量列是分类变量，不得参与插值/缩尾/取对数
                         num_cols = [
                             c
                             for c in num_cols
@@ -787,9 +787,9 @@ try:
                     st.error(f"保存失败：{e}")
 
     # ================================================================
-    #                    第二阶段：描述性统计与模型诊断
+    #                    第三阶段：描述性统计与模型诊断
     # ================================================================
-    elif page == "2. 描述性统计与模型诊断":  # 注意：侧边栏radio也要同步改为这个名称
+    elif page == "3. 描述性统计与模型诊断":  # 注意：侧边栏radio也要同步改为这个名称
         if st.session_state.merged_df is None:
             st.warning("⚠️ 请先前往「数据清洗」阶段完成数据清洗！")
         else:
@@ -1317,9 +1317,9 @@ try:
                         st.warning(f"Hausman检验出错：{e}")
 
     # ================================================================
-    #                    第三阶段：回归分析（核心部分）
+    #                    第四阶段：回归分析（核心部分）
     # ================================================================
-    elif page == "3. 回归分析":
+    elif page == "4. 回归分析":
         from linearmodels.panel import PanelOLS, RandomEffects
 
         st.header("📈 回归分析与结果导出")
@@ -2048,10 +2048,10 @@ try:
                         st.error(f"Bootstrap 失败：{_e}"); st.code(traceback.format_exc())
 
     # ================================================================
-    #                    第四阶段：指标测算（熵权法 + TOPSIS）
+    #                    第二阶段：指标测算（熵权法 + TOPSIS）
     # ================================================================
-    elif page == "4. 指标测算":
-        st.header("📐 第四阶段：指标测算（熵权法客观赋权 + TOPSIS 综合得分）")
+    elif page == "2. 指标测算":
+        st.header("📐 指标测算（熵权法客观赋权 + TOPSIS 综合得分）")
 
         if st.session_state.merged_df is None:
             st.warning("⚠️ 请先前往「1. 数据清洗」完成数据清洗，再来进行指标测算。")
